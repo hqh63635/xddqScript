@@ -31,6 +31,30 @@ RANK_BATTLE_CHALLENGE = 20412
 RANK_BATTLE_CHALLENGE_RESPONSE = 412
 RANK_BATTLE_TICKET = 100026
 RANK_BATTLE_TICKET_MAX = 3
+PRIVILEGE_CARD_SYNC = 104
+WILD_BOSS_GET_DATA = 20731
+WILD_BOSS_SYNC = 731
+WILD_BOSS_REPEAT = 20733
+WILD_BOSS_REPEAT_RESPONSE = 733
+WILD_BOSS_DAILY_MAX = 6
+WILD_BOSS_MONTHLY_CARD_BONUS = 2
+WILD_BOSS_MAX_WITH_MONTHLY_CARD = WILD_BOSS_DAILY_MAX + WILD_BOSS_MONTHLY_CARD_BONUS
+INVADE_SYNC = 1402
+INVADE_CHALLENGE = 21401
+INVADE_CHALLENGE_RESPONSE = 1401
+INVADE_DAILY_MAX = 5
+STAR_TRIAL_SYNC = 6901
+STAR_TRIAL_CHALLENGE = 206902
+STAR_TRIAL_CHALLENGE_RESPONSE = 6902
+STAR_TRIAL_DAILY_MAX = 30
+HERO_RANK_SYNC = 3701
+HERO_RANK_ENTER = 23700
+HERO_RANK_ENTER_RESPONSE = 3700
+HERO_RANK_GET_LIST = 23702
+HERO_RANK_GET_LIST_RESPONSE = 3702
+HERO_RANK_FIGHT = 23703
+HERO_RANK_FIGHT_RESPONSE = 3703
+HERO_RANK_ENERGY_MAX = 10
 
 ATTRIBUTE_NAMES = {
     1: "攻击", 2: "生命", 3: "防御", 4: "速度",
@@ -280,6 +304,64 @@ def response_ret(payload: bytes) -> int | None:
     return int(values[0]) if values else None
 
 
+def parse_wild_boss_used_times(payload: bytes) -> int | None:
+    """Read WildBossDataSync.data.useRepeatTimes."""
+    data = _children(parse_protobuf(payload), 1)
+    if not data:
+        return None
+    values = _values(data[0], 2)
+    return int(values[0]) if values else None
+
+
+def parse_monthly_card_end_time(payload: bytes) -> int:
+    values = _values(parse_protobuf(payload), 1)
+    return int(values[0]) if values else 0
+
+
+def wild_boss_daily_max(frames: list[tuple[int, bytes]], now: float | None = None) -> int:
+    end_time = next(
+        (
+            parse_monthly_card_end_time(payload)
+            for message_id, payload in reversed(frames)
+            if message_id == PRIVILEGE_CARD_SYNC
+        ),
+        0,
+    )
+    current = time.time() if now is None else now
+    active = end_time > (current * 1000 if end_time >= 1_000_000_000_000 else current)
+    return WILD_BOSS_MAX_WITH_MONTHLY_CARD if active else WILD_BOSS_DAILY_MAX
+
+
+def parse_invade_used_times(payload: bytes) -> int | None:
+    values = _values(parse_protobuf(payload), 3)
+    return int(values[0]) if values else None
+
+
+def parse_star_trial_state(payload: bytes) -> tuple[int, int] | None:
+    fields = parse_protobuf(payload)
+    boss_ids = _values(fields, 1)
+    remaining = _values(fields, 2)
+    if not boss_ids or not remaining:
+        return None
+    return int(boss_ids[0]), int(remaining[0])
+
+
+def parse_hero_rank_energy(payload: bytes) -> int | None:
+    player_info = _children(parse_protobuf(payload), 1)
+    if not player_info:
+        return None
+    energy = _values(player_info[0], 1)
+    return int(energy[0]) if energy else None
+
+
+def parse_hero_rank_enter_energy(payload: bytes) -> int | None:
+    player_info = _children(parse_protobuf(payload), 2)
+    if not player_info:
+        return None
+    energy = _values(player_info[0], 1)
+    return int(energy[0]) if energy else None
+
+
 class GameSession:
     def __init__(self, ws_address: str, player_id: int, token: str, timeout: float = 30) -> None:
         self.ws_address = ws_address
@@ -291,6 +373,7 @@ class GameSession:
         self.observed_frames: list[tuple[int, bytes]] = []
         self.equipped_items: list[dict[str, Any]] = []
         self.god_body_id = 0
+        self._hero_rank_candidates: list[dict[str, Any]] | None = None
         self._last_ping = 0.0
 
     def connect(self) -> None:
@@ -415,6 +498,143 @@ class GameSession:
             "opponent": opponent, "payloadHex": response.hex(),
         }
 
+    def wild_boss_remaining(self, refresh: bool = True) -> int | None:
+        if refresh:
+            try:
+                self._request(WILD_BOSS_GET_DATA, WILD_BOSS_SYNC)
+            except (RuntimeError, TimeoutError, websocket.WebSocketException):
+                pass
+        daily_max = wild_boss_daily_max(self.observed_frames)
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == WILD_BOSS_SYNC:
+                used = parse_wild_boss_used_times(payload)
+                if used is not None:
+                    return max(0, daily_max - used)
+        return None
+
+    def repeat_wild_boss(self) -> dict[str, Any]:
+        response = self._request(WILD_BOSS_REPEAT, WILD_BOSS_REPEAT_RESPONSE)
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def invade_state(self) -> tuple[int, int]:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == INVADE_SYNC:
+                used = parse_invade_used_times(payload)
+                if used is not None:
+                    return used, max(0, INVADE_DAILY_MAX - used)
+        return INVADE_DAILY_MAX, 0
+
+    def challenge_invade(self) -> dict[str, Any]:
+        response = self._request(INVADE_CHALLENGE, INVADE_CHALLENGE_RESPONSE)
+        used = None
+        sync = _children(parse_protobuf(response), 5)
+        if sync:
+            values = _values(sync[0], 3)
+            used = int(values[0]) if values else None
+        return {"ret": response_ret(response), "used": used, "payloadHex": response.hex()}
+
+    def star_trial_state(self) -> tuple[int, int]:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == STAR_TRIAL_SYNC:
+                state = parse_star_trial_state(payload)
+                if state is not None:
+                    return state
+        return 0, 0
+
+    def challenge_star_trial(self, boss_id: int) -> dict[str, Any]:
+        response = self._request(
+            STAR_TRIAL_CHALLENGE, STAR_TRIAL_CHALLENGE_RESPONSE,
+            protobuf_int(1, boss_id),
+        )
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def hero_rank_energy(self, refresh: bool = True) -> int | None:
+        if refresh:
+            try:
+                response = self._request(HERO_RANK_ENTER, HERO_RANK_ENTER_RESPONSE)
+                if response_ret(response) == 0:
+                    fight_lists = _children(parse_protobuf(response), 3)
+                    self._hero_rank_candidates = (
+                        _children(fight_lists[0], 2) if fight_lists else []
+                    )
+                    energy = parse_hero_rank_enter_energy(response)
+                    if energy is not None:
+                        return energy
+            except (RuntimeError, TimeoutError, websocket.WebSocketException):
+                pass
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == HERO_RANK_SYNC:
+                energy = parse_hero_rank_energy(payload)
+                if energy is not None:
+                    return energy
+        return None
+
+    def hero_rank_fight(self) -> dict[str, Any]:
+        if self._hero_rank_candidates is None:
+            list_response = self._request(
+                HERO_RANK_GET_LIST, HERO_RANK_GET_LIST_RESPONSE,
+                protobuf_int(1, 0),
+            )
+            if response_ret(list_response) != 0:
+                return {"ret": response_ret(list_response), "reason": "list_failed"}
+            fight_lists = _children(parse_protobuf(list_response), 2)
+            self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
+        candidates = self._hero_rank_candidates
+        opponents = []
+        for candidate in candidates:
+            ranks = _values(candidate, 1)
+            appearances = _children(candidate, 2)
+            master_ids = _values(candidate, 3)
+            master_levels = _values(candidate, 4)
+            if not ranks or not appearances:
+                continue
+            appearance = appearances[0]
+            player_ids = _values(appearance, 1)
+            powers = next(
+                (_decimal_text(field) for field in appearance if field["field"] == 4),
+                None,
+            )
+            appearance_ids = _values(appearance, 5)
+            cloud_ids = _values(appearance, 6)
+            names = next(
+                (field.get("text") for field in appearance if field["field"] == 2 and "text" in field),
+                "未知对手",
+            )
+            opponents.append({
+                "targetId": int(player_ids[0]) if player_ids else 0,
+                "rank": int(ranks[0]),
+                "masterId": int(master_ids[0]) if master_ids else 0,
+                "masterLv": int(master_levels[0]) if master_levels else 0,
+                "appearanceId": int(appearance_ids[0]) if appearance_ids else 0,
+                "cloudId": int(cloud_ids[0]) if cloud_ids else 0,
+                "name": names,
+                "power": int(powers) if powers is not None else 0,
+            })
+        if not opponents:
+            return {"ret": None, "reason": "no_opponent"}
+        opponent = min(opponents, key=lambda value: value["power"])
+        is_robot = opponent["targetId"] == 0
+        payload = b"".join([
+            protobuf_int(1, opponent["targetId"]),
+            protobuf_int(2, opponent["rank"]),
+            protobuf_int(3, opponent["masterId"] if is_robot else 0),
+            protobuf_int(4, opponent["masterLv"] if is_robot else 0),
+            protobuf_int(5, opponent["appearanceId"] if is_robot else 0),
+            protobuf_int(6, opponent["cloudId"] if is_robot else 0),
+        ])
+        response = self._request(HERO_RANK_FIGHT, HERO_RANK_FIGHT_RESPONSE, payload)
+        fields = parse_protobuf(response)
+        if response_ret(response) == 0:
+            fight_lists = _children(fields, 7)
+            self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
+        player_info = _children(fields, 2)
+        energy_values = _values(player_info[0], 1) if player_info else []
+        return {
+            "ret": response_ret(response), "reason": "challenged", "opponent": opponent,
+            "energy": int(energy_values[0]) if energy_values else None,
+            "payloadHex": response.hex(),
+        }
+
     def decompose(self, equipment_ids: list[int]) -> dict[str, Any]:
         if not equipment_ids:
             raise ValueError("No equipment selected for decomposition")
@@ -441,7 +661,9 @@ class GameSession:
         slot = equipment["equipmentId"] // 100
         return next((item for item in self.equipped_items if item["slot"] == slot), None)
 
-    def resource_snapshot(self, server_id: int) -> dict[str, Any]:
+    def resource_snapshot(self, server_id: int, refresh_wild_boss: bool = False) -> dict[str, Any]:
+        if refresh_wild_boss:
+            self.wild_boss_remaining(refresh=True)
         return _snapshot_from_frames(server_id, self.observed_frames)
 
     def close(self) -> None:
@@ -492,6 +714,58 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
     snapshot["jade"] = inventory.get(100000, 0)
     snapshot["spiritStone"] = inventory.get(100003, 0)
     snapshot["rankBattleTicket"] = min(RANK_BATTLE_TICKET_MAX, inventory.get(RANK_BATTLE_TICKET, 0))
+    daily_max = wild_boss_daily_max(frames)
+    used_times = next(
+        (
+            used
+            for message_id, payload in reversed(frames)
+            if message_id == WILD_BOSS_SYNC
+            for used in [parse_wild_boss_used_times(payload)]
+            if used is not None
+        ),
+        None,
+    )
+    snapshot["wildBossDailyMax"] = daily_max
+    snapshot["wildBossRemaining"] = (
+        max(0, daily_max - used_times) if used_times is not None else None
+    )
+    invade_used = next(
+        (
+            used
+            for message_id, payload in reversed(frames)
+            if message_id == INVADE_SYNC
+            for used in [parse_invade_used_times(payload)]
+            if used is not None
+        ),
+        INVADE_DAILY_MAX,
+    )
+    snapshot["invadeRemaining"] = max(0, INVADE_DAILY_MAX - invade_used)
+    star_state = next(
+        (
+            state
+            for message_id, payload in reversed(frames)
+            if message_id == STAR_TRIAL_SYNC
+            for state in [parse_star_trial_state(payload)]
+            if state is not None
+        ),
+        (0, 0),
+    )
+    snapshot["starTrialRemaining"] = star_state[1]
+    hero_energy = next(
+        (
+            energy
+            for message_id, payload in reversed(frames)
+            if message_id in (HERO_RANK_ENTER_RESPONSE, HERO_RANK_SYNC)
+            for energy in [
+                parse_hero_rank_enter_energy(payload)
+                if message_id == HERO_RANK_ENTER_RESPONSE
+                else parse_hero_rank_energy(payload)
+            ]
+            if energy is not None
+        ),
+        0,
+    )
+    snapshot["heroRankEnergy"] = hero_energy
     return snapshot
 
 
@@ -499,7 +773,146 @@ def fetch_role_snapshot(server_id: int, output_dir: Path) -> dict[str, Any]:
     """Read currency and player attributes from the login synchronization stream."""
     login = _load_login(server_id, output_dir)
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
-        return session.resource_snapshot(server_id)
+        return session.resource_snapshot(server_id, refresh_wild_boss=True)
+
+
+def run_wild_boss_tasks(
+    server_id: int,
+    output_dir: Path,
+    count: int,
+    log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Repeat the wild boss up to the selected count and today's remainder."""
+    if not 1 <= count <= WILD_BOSS_MAX_WITH_MONTHLY_CARD:
+        raise ValueError("Wild boss count must be between 1 and 8")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        remaining = session.wild_boss_remaining()
+        daily_max = wild_boss_daily_max(session.observed_frames)
+        if remaining is None:
+            log("妖王剩余次数读取失败，本次不会发起挑战。")
+            return {"ret": None, "completed": 0, "remaining": None, "reason": "wild_boss_state_unknown"}
+        target = min(count, remaining)
+        log(f"妖王今日剩余 {remaining}/{daily_max} 次，计划挑战 {target} 次。")
+        initial = session.resource_snapshot(server_id)
+        initial["wildBossRemaining"] = remaining
+        initial["wildBossDailyMax"] = daily_max
+        if snapshot is not None:
+            snapshot(initial)
+        for _ in range(target):
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "stopped"}
+            result = session.repeat_wild_boss()
+            if result["ret"] != 0:
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": remaining, "reason": "wild_boss_failed",
+                }
+            completed += 1
+            remaining -= 1
+            value = session.resource_snapshot(server_id)
+            value["wildBossRemaining"] = remaining
+            if snapshot is not None:
+                snapshot(value)
+            log(f"第 {completed}/{target} 次妖王挑战完成，今日剩余 {remaining} 次。")
+        return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "finished"}
+
+
+def run_invade_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if not 1 <= count <= INVADE_DAILY_MAX:
+        raise ValueError("Invade count must be between 1 and 5")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        used, remaining = session.invade_state()
+        target = min(count, remaining)
+        log(f"异兽入侵今日剩余 {remaining}/{INVADE_DAILY_MAX} 次，计划挑战 {target} 次。")
+        for _ in range(target):
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "stopped"}
+            result = session.challenge_invade()
+            if result["ret"] != 0:
+                return {"ret": result["ret"], "completed": completed, "remaining": remaining, "reason": "invade_failed"}
+            completed += 1
+            used = result["used"] if result["used"] is not None else used + 1
+            remaining = max(0, INVADE_DAILY_MAX - used)
+            value = session.resource_snapshot(server_id); value["invadeRemaining"] = remaining
+            if snapshot is not None: snapshot(value)
+            log(f"第 {completed}/{target} 次异兽入侵完成，今日剩余 {remaining} 次。")
+        return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "finished"}
+
+
+def run_star_trial_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if not 1 <= count <= STAR_TRIAL_DAILY_MAX:
+        raise ValueError("Star trial count must be between 1 and 30")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        boss_id, remaining = session.star_trial_state()
+        target = min(count, remaining)
+        log(f"星宿试炼今日剩余 {remaining}/{STAR_TRIAL_DAILY_MAX} 次，计划挑战 {target} 次。")
+        if boss_id <= 0 and target:
+            return {"ret": None, "completed": 0, "remaining": remaining, "reason": "star_trial_no_boss"}
+        for _ in range(target):
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "stopped"}
+            result = session.challenge_star_trial(boss_id)
+            if result["ret"] != 0:
+                return {"ret": result["ret"], "completed": completed, "remaining": remaining, "reason": "star_trial_failed"}
+            completed += 1
+            synced_boss_id, synced_remaining = session.star_trial_state()
+            if synced_remaining < remaining:
+                remaining = synced_remaining
+                if synced_boss_id > 0:
+                    boss_id = synced_boss_id
+            else:
+                remaining -= 1
+            value = session.resource_snapshot(server_id); value["starTrialRemaining"] = remaining
+            if snapshot is not None: snapshot(value)
+            log(f"第 {completed}/{target} 次星宿试炼完成，今日剩余 {remaining} 次。")
+        return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "finished"}
+
+
+def run_hero_rank_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if not 1 <= count <= HERO_RANK_ENERGY_MAX:
+        raise ValueError("Hero rank count must be between 1 and 10")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        energy = session.hero_rank_energy()
+        if energy is None:
+            log("群英榜体力读取失败，本次不会发起挑战。")
+            return {"ret": None, "completed": 0, "remaining": None, "reason": "hero_rank_energy_unknown"}
+        target = min(count, energy)
+        log(f"群英榜当前体力 {energy}/{HERO_RANK_ENERGY_MAX}，计划挑战 {target} 次。")
+        for _ in range(target):
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": energy, "reason": "stopped"}
+            result = session.hero_rank_fight()
+            if result["ret"] != 0:
+                return {"ret": result["ret"], "completed": completed, "remaining": energy, "reason": result["reason"]}
+            completed += 1
+            energy = result["energy"] if result["energy"] is not None else max(0, energy - 1)
+            value = session.resource_snapshot(server_id); value["heroRankEnergy"] = energy
+            if snapshot is not None: snapshot(value)
+            opponent = result["opponent"]
+            log(f"群英榜挑战 {opponent['name']} 完成，当前体力 {energy}。")
+        return {"ret": 0, "completed": completed, "remaining": energy, "reason": "finished"}
 
 
 def run_chop_tasks(

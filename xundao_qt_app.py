@@ -30,7 +30,15 @@ from qfluentwidgets import (
 )
 
 from xundao_game_client import fetch_game_data
-from xundao_game_session import ATTRIBUTE_NAMES, fetch_role_snapshot, run_chop_tasks
+from xundao_game_session import (
+    ATTRIBUTE_NAMES,
+    fetch_role_snapshot,
+    run_chop_tasks,
+    run_hero_rank_tasks,
+    run_invade_tasks,
+    run_star_trial_tasks,
+    run_wild_boss_tasks,
+)
 from xundao_role_client import fetch_roles
 from xundao_qr_login import (
     BASE_URL, DEFAULT_APP_ID, DEFAULT_ORIGIN, DEFAULT_UA, SERVICE,
@@ -58,7 +66,10 @@ def read_config() -> dict[str, str]:
         "selectedServerId": "", "chopCount": "unlimited", "chopInterval": "1.0",
         "equipmentAction": "stop", "keepQuality": "5",
         "keepAttributeType": "0", "keepAttributeValue": "0",
-        "autoRankBattle": "false",
+        "autoRankBattle": "false", "autoWildBoss": "false", "wildBossCount": "6",
+        "autoInvade": "false", "invadeCount": "5",
+        "autoStarTrial": "false", "starTrialCount": "30",
+        "autoHeroRank": "false", "heroRankCount": "10",
     }
     if not CONFIG_PATH.exists():
         return defaults
@@ -317,11 +328,17 @@ class XundaoWindow(FramelessWindow):
             label = QLabel(text); label.setAlignment(Qt.AlignmentFlag.AlignCenter); label.setStyleSheet("font-size:11px;")
             item_layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
             item_layout.addWidget(label)
-            if index:
+            if index == 2:
+                button.clicked.connect(self._select_wild_boss_task)
+            elif index:
                 button.clicked.connect(lambda _checked=False, name=text: self.append_log(f"{name}功能暂未开放。"))
             layout.addWidget(item)
         layout.addStretch()
         return nav
+
+    def _select_wild_boss_task(self) -> None:
+        self.wild_boss_enabled.setChecked(True)
+        self.append_log("已选择挑战妖王任务，可设置挑战次数后启动。")
 
     def _settings_panel(self, config: dict[str, str]) -> QFrame:
         panel = Card(); layout = QVBoxLayout(panel); set_margins(layout, 16, 14, 16, 16); layout.setSpacing(12)
@@ -372,8 +389,60 @@ class XundaoWindow(FramelessWindow):
         rank_info.setToolTip("有挑战状时自动挑战妖力最低的可用对手；没有挑战状时继续等待砍树掉落。")
         rank_layout.addWidget(self.rank_enabled); rank_layout.addWidget(self.rank_ticket_label); rank_layout.addWidget(rank_info); rank_layout.addStretch()
         layout.addWidget(rank_task)
+        wild_boss_task = Card(object_name="softCard")
+        wild_boss_layout = QHBoxLayout(wild_boss_task); set_margins(wild_boss_layout, 16, 12, 16, 12)
+        self.wild_boss_enabled = CheckBox("挑战妖王")
+        self.wild_boss_enabled.setChecked(config.get("autoWildBoss", "false").lower() == "true")
+        self.wild_boss_count_values = [1, 2, 3, 4, 5, 6]
+        self.wild_boss_count = ComboBox()
+        self.wild_boss_count.addItems([f"{value} 次" for value in self.wild_boss_count_values])
+        saved_wild_boss_count = int(config.get("wildBossCount", "6"))
+        self.wild_boss_count.setCurrentIndex(
+            self.wild_boss_count_values.index(saved_wild_boss_count)
+            if saved_wild_boss_count in self.wild_boss_count_values else 5
+        )
+        self.wild_boss_remaining_label = QLabel("今日剩余 --/6 次")
+        self.wild_boss_remaining_label.setObjectName("muted")
+        wild_boss_layout.addWidget(self.wild_boss_enabled)
+        wild_boss_layout.addSpacing(12)
+        wild_boss_layout.addWidget(QLabel("挑战次数"))
+        wild_boss_layout.addWidget(self.wild_boss_count)
+        wild_boss_layout.addSpacing(12)
+        wild_boss_layout.addWidget(self.wild_boss_remaining_label)
+        wild_boss_layout.addStretch()
+        layout.addWidget(wild_boss_task)
+        limited_task = Card(object_name="softCard")
+        limited_layout = QGridLayout(limited_task); set_margins(limited_layout, 16, 12, 16, 12)
+        limited_layout.setHorizontalSpacing(12); limited_layout.setVerticalSpacing(8)
+        self.invade_enabled, self.invade_count, self.invade_remaining_label = self._add_limited_task_row(
+            limited_layout, 0, "异兽入侵", 5, config.get("autoInvade", "false"), config.get("invadeCount", "5"),
+            "今日剩余 --/5 次",
+        )
+        self.star_trial_enabled, self.star_trial_count, self.star_trial_remaining_label = self._add_limited_task_row(
+            limited_layout, 1, "星宿试炼", 30, config.get("autoStarTrial", "false"), config.get("starTrialCount", "30"),
+            "今日剩余 --/30 次",
+        )
+        self.hero_rank_enabled, self.hero_rank_count, self.hero_rank_remaining_label = self._add_limited_task_row(
+            limited_layout, 2, "群英榜", 10, config.get("autoHeroRank", "false"), config.get("heroRankCount", "10"),
+            "当前体力 --/10",
+        )
+        layout.addWidget(limited_task)
         layout.addStretch()
         return panel
+
+    def _add_limited_task_row(
+        self, layout: QGridLayout, row: int, name: str, maximum: int,
+        enabled: str, saved_count: str, remaining_text: str,
+    ) -> tuple[CheckBox, ComboBox, QLabel]:
+        checkbox = CheckBox(name); checkbox.setChecked(str(enabled).lower() == "true")
+        count_input = ComboBox(); count_input.addItems([f"{value} 次" for value in range(1, maximum + 1)])
+        try: selected = int(saved_count)
+        except (TypeError, ValueError): selected = maximum
+        count_input.setCurrentIndex(max(0, min(maximum, selected) - 1))
+        remaining = QLabel(remaining_text); remaining.setObjectName("muted")
+        layout.addWidget(checkbox, row, 0); layout.addWidget(QLabel("次数"), row, 1)
+        layout.addWidget(count_input, row, 2); layout.addWidget(remaining, row, 3); layout.setColumnStretch(4, 1)
+        return checkbox, count_input, remaining
 
     def _log_panel(self) -> QFrame:
         panel = Card(); panel.setMinimumWidth(400)
@@ -538,7 +607,16 @@ class XundaoWindow(FramelessWindow):
             if not stop_event.is_set(): self.event.emit("error", str(exc))
 
     def start_chop(self) -> None:
-        if not self.current_role or not self.chop_enabled.isChecked(): return
+        if not self.current_role:
+            return
+        run_chop = self.chop_enabled.isChecked()
+        run_wild_boss = self.wild_boss_enabled.isChecked()
+        run_invade = self.invade_enabled.isChecked()
+        run_star_trial = self.star_trial_enabled.isChecked()
+        run_hero_rank = self.hero_rank_enabled.isChecked()
+        if not any((run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank)):
+            self.append_log("请至少选择一个任务。")
+            return
         action = "decompose" if self.action_input.currentIndex() == 1 else "stop"
         count = self.count_values[self.count_input.currentIndex()]
         saved_count = "unlimited" if count is None else count
@@ -547,6 +625,11 @@ class XundaoWindow(FramelessWindow):
             chopCount=saved_count, chopInterval=self.interval_input.value(), equipmentAction=action,
             keepQuality=self.quality_input.value(), keepAttributeType=attribute_type,
             autoRankBattle=self.rank_enabled.isChecked(),
+            autoWildBoss=run_wild_boss,
+            wildBossCount=self.wild_boss_count_values[self.wild_boss_count.currentIndex()],
+            autoInvade=run_invade, invadeCount=self.invade_count.currentIndex() + 1,
+            autoStarTrial=run_star_trial, starTrialCount=self.star_trial_count.currentIndex() + 1,
+            autoHeroRank=run_hero_rank, heroRankCount=self.hero_rank_count.currentIndex() + 1,
         )
         self.chop_stop_event = threading.Event()
         self.start_button.setEnabled(False); role = dict(self.current_role)
@@ -554,10 +637,41 @@ class XundaoWindow(FramelessWindow):
         interval = self.interval_input.value()
         quality = self.quality_input.value()
         auto_rank_battle = self.rank_enabled.isChecked()
+        wild_boss_count = self.wild_boss_count_values[self.wild_boss_count.currentIndex()]
+        invade_count = self.invade_count.currentIndex() + 1
+        star_trial_count = self.star_trial_count.currentIndex() + 1
+        hero_rank_count = self.hero_rank_count.currentIndex() + 1
         count_text = "无限次" if count is None else f"{count} 次"
-        self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count_text}。")
+        if run_wild_boss:
+            self.append_log(
+                f"开始执行挑战妖王：{role.get('serverName')} / {role.get('nickName')}，"
+                f"最多 {wild_boss_count} 次。"
+            )
+        if run_chop:
+            self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count_text}。")
         def worker() -> None:
             try:
+                auxiliary_tasks = [
+                    (run_wild_boss, run_wild_boss_tasks, wild_boss_count, "挑战妖王"),
+                    (run_invade, run_invade_tasks, invade_count, "异兽入侵"),
+                    (run_star_trial, run_star_trial_tasks, star_trial_count, "星宿试炼"),
+                    (run_hero_rank, run_hero_rank_tasks, hero_rank_count, "群英榜"),
+                ]
+                task_results = []
+                for enabled, runner, task_count, task_name in auxiliary_tasks:
+                    if not enabled:
+                        continue
+                    result = runner(
+                        int(role["serverId"]), OUTPUT_DIR, task_count,
+                        lambda msg: self.event.emit("chop_log", msg), self.chop_stop_event,
+                        snapshot=lambda value: self.event.emit("profile_snapshot", value),
+                    )
+                    result["taskName"] = task_name
+                    task_results.append(result)
+                    self.event.emit("limited_task_result", result)
+                if not run_chop:
+                    self.event.emit("auxiliary_tasks_done", task_results)
+                    return
                 result = run_chop_tasks(
                     int(role["serverId"]), OUTPUT_DIR, count, interval, action, quality,
                     lambda msg: self.event.emit("chop_log", msg), self.chop_stop_event,
@@ -584,7 +698,7 @@ class XundaoWindow(FramelessWindow):
 
     def stop_chop(self) -> None:
         if self.start_button.isEnabled():
-            self.append_log("当前没有正在运行的砍树任务。")
+            self.append_log("当前没有正在运行的任务。")
             return
         self.chop_stop_event.set()
         self.append_log("已请求停止，当前操作完成后将安全退出。")
@@ -608,6 +722,21 @@ class XundaoWindow(FramelessWindow):
             self.resource_values["境界"].setText(str(value.get("realmId", "-")))
             if hasattr(self, "rank_ticket_label"):
                 self.rank_ticket_label.setText(f"（挑战状：{value.get('rankBattleTicket', 0)} 张）")
+            if hasattr(self, "wild_boss_remaining_label"):
+                daily_max = int(value.get("wildBossDailyMax", 6))
+                remaining = value.get("wildBossRemaining")
+                selected = self.wild_boss_count_values[self.wild_boss_count.currentIndex()]
+                if self.wild_boss_count_values[-1] != daily_max:
+                    self.wild_boss_count_values = list(range(1, daily_max + 1))
+                    self.wild_boss_count.clear()
+                    self.wild_boss_count.addItems([f"{item} 次" for item in self.wild_boss_count_values])
+                    self.wild_boss_count.setCurrentIndex(min(selected, daily_max) - 1)
+                remaining_text = "--" if remaining is None else str(int(remaining))
+                self.wild_boss_remaining_label.setText(f"今日剩余 {remaining_text}/{daily_max} 次")
+            if hasattr(self, "invade_remaining_label"):
+                self.invade_remaining_label.setText(f"今日剩余 {int(value.get('invadeRemaining', 0))}/5 次")
+                self.star_trial_remaining_label.setText(f"今日剩余 {int(value.get('starTrialRemaining', 0))}/30 次")
+                self.hero_rank_remaining_label.setText(f"当前体力 {int(value.get('heroRankEnergy', 0))}/10")
             self.account_meta.setText(
                 f"修为：{self.format_amount(value.get('cultivation', 0))}    "
                 f"妖力：{self.format_amount(value.get('power', 0))}"
@@ -618,6 +747,21 @@ class XundaoWindow(FramelessWindow):
         elif event == "chop_error":
             self.start_button.setEnabled(True); self._stop_runtime()
             self.append_log(f"连接或请求失败：{value}")
+        elif event == "limited_task_result":
+            task_name = value.get("taskName", "限次任务")
+            completed = value.get("completed", 0)
+            remaining = value.get("remaining", 0)
+            if value.get("reason") == "finished":
+                self.append_log(f"{task_name}任务完成，共挑战 {completed} 次，剩余 {remaining}。")
+            elif value.get("reason") == "stopped":
+                self.append_log(f"{task_name}已停止，共完成 {completed} 次，剩余 {remaining}。")
+            else:
+                self.append_log(
+                    f"{task_name}停止：{value.get('reason')}，服务端返回 {value.get('ret')}，"
+                    f"已完成 {completed} 次。"
+                )
+        elif event == "auxiliary_tasks_done":
+            self.start_button.setEnabled(True); self._stop_runtime()
         elif event == "chop_success":
             self.start_button.setEnabled(True); self._stop_runtime()
             completed = value.get("completed", 0); reason = value.get("reason", "unknown")

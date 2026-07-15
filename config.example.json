@@ -8,5 +8,13 @@
   "equipmentAction": "stop",
   "keepQuality": "5",
   "keepAttributeType": "0",
-  "autoRankBattle": "false"
+  "autoRankBattle": "false",
+  "autoWildBoss": "false",
+  "wildBossCount": "6",
+  "autoInvade": "false",
+  "invadeCount": "5",
+  "autoStarTrial": "false",
+  "starTrialCount": "30",
+  "autoHeroRank": "false",
+  "heroRankCount": "10"
 }
