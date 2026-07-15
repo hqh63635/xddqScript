@@ -16,5 +16,7 @@
   "autoStarTrial": "false",
   "starTrialCount": "30",
   "autoHeroRank": "false",
-  "heroRankCount": "10"
+  "heroRankCount": "10",
+  "autoDestinyTravel": "false",
+  "destinyTravelCount": "10"
 }

@@ -55,6 +55,10 @@ HERO_RANK_GET_LIST_RESPONSE = 3702
 HERO_RANK_FIGHT = 23703
 HERO_RANK_FIGHT_RESPONSE = 3703
 HERO_RANK_ENERGY_MAX = 10
+DESTINY_SYNC = 651
+DESTINY_TRAVEL = 20653
+DESTINY_TRAVEL_RESPONSE = 653
+DESTINY_TRAVEL_COUNT_MAX = 30
 
 ATTRIBUTE_NAMES = {
     1: "攻击", 2: "生命", 3: "防御", 4: "速度",
@@ -362,6 +366,15 @@ def parse_hero_rank_enter_energy(payload: bytes) -> int | None:
     return int(energy[0]) if energy else None
 
 
+def parse_destiny_power(payload: bytes) -> int | None:
+    """Read DestinyData.playerDestinyDataMsg.power."""
+    player_data = _children(parse_protobuf(payload), 2)
+    if not player_data:
+        return None
+    power = _values(player_data[0], 1)
+    return int(power[0]) if power else None
+
+
 class GameSession:
     def __init__(self, ws_address: str, player_id: int, token: str, timeout: float = 30) -> None:
         self.ws_address = ws_address
@@ -571,6 +584,21 @@ class GameSession:
                 if energy is not None:
                     return energy
         return None
+
+    def destiny_power(self) -> int | None:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == DESTINY_SYNC:
+                power = parse_destiny_power(payload)
+                if power is not None:
+                    return power
+        return None
+
+    def travel_destiny(self) -> dict[str, Any]:
+        response = self._request(
+            DESTINY_TRAVEL, DESTINY_TRAVEL_RESPONSE,
+            protobuf_int(1, 0),
+        )
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
 
     def hero_rank_fight(self, rank_change_retries: int = 0) -> dict[str, Any]:
         if self._hero_rank_candidates is None:
@@ -793,6 +821,16 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
         0,
     )
     snapshot["heroRankEnergy"] = hero_energy
+    snapshot["destinyPower"] = next(
+        (
+            power
+            for message_id, payload in reversed(frames)
+            if message_id == DESTINY_SYNC
+            for power in [parse_destiny_power(payload)]
+            if power is not None
+        ),
+        None,
+    )
     return snapshot
 
 
@@ -940,6 +978,58 @@ def run_hero_rank_tasks(
             opponent = result["opponent"]
             log(f"群英榜挑战 {opponent['name']} 完成，当前体力 {energy}。")
         return {"ret": 0, "completed": completed, "remaining": energy, "reason": "finished"}
+
+
+def run_destiny_travel_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if not 1 <= count <= DESTINY_TRAVEL_COUNT_MAX:
+        raise ValueError("Destiny travel count must be between 1 and 30")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        power = session.destiny_power()
+        if power is None:
+            target = count
+            log(f"当前连接未收到仙友体力同步，将按所选上限尝试游历 {target} 次。")
+        else:
+            target = min(count, power)
+            log(f"仙友游历当前体力 {power}，计划游历 {target} 次。")
+        for _ in range(target):
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": power, "reason": "stopped"}
+            result = session.travel_destiny()
+            if result["ret"] != 0:
+                if result["ret"] == 1705:
+                    log("仙友游历体力已耗尽。")
+                    return {
+                        "ret": 0, "completed": completed,
+                        "remaining": 0, "reason": "finished",
+                    }
+                message = {
+                    1701: "仙友系统未解锁",
+                    1706: "当前游历配置不存在",
+                    1707: "一键游历未解锁",
+                }.get(result["ret"], f"服务端返回 {result['ret']}")
+                log(f"仙友游历失败：{message}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": power, "reason": "destiny_travel_failed",
+                }
+            completed += 1
+            synced_power = session.destiny_power()
+            if synced_power is not None:
+                power = synced_power
+            elif power is not None:
+                power = max(0, power - 1)
+            value = session.resource_snapshot(server_id); value["destinyPower"] = power
+            if snapshot is not None:
+                snapshot(value)
+            power_text = "等待同步" if power is None else str(power)
+            log(f"第 {completed}/{target} 次仙友游历完成，当前体力 {power_text}。")
+        return {"ret": 0, "completed": completed, "remaining": power, "reason": "finished"}
 
 
 def run_chop_tasks(

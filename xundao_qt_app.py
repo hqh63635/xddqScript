@@ -18,22 +18,99 @@ import requests
 import websocket
 from PIL import Image
 from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QMessageBox, QPlainTextEdit, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QVBoxLayout, QWidget, QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit, QSpinBox,
+    QToolButton,
 )
-from qframelesswindow import FramelessWindow, TitleBar
-from qfluentwidgets import (
-    CheckBox, ComboBox, DoubleSpinBox, FluentIcon as FIF, LineEdit, PasswordLineEdit,
-    PrimaryPushButton, PushButton, SpinBox, Theme, ToolButton, setTheme,
-)
+try:
+    from qframelesswindow import FramelessWindow, TitleBar
+except ModuleNotFoundError:
+    class TitleBar(QWidget):
+        def __init__(self, parent: QWidget) -> None:
+            super().__init__(parent)
+            self.hBoxLayout = QHBoxLayout(self)
+            self.minBtn = QPushButton("-", self)
+            self.maxBtn = QPushButton("+", self)
+            self.closeBtn = QPushButton("x", self)
+            self.minBtn.clicked.connect(parent.showMinimized)
+            self.maxBtn.clicked.connect(
+                lambda: parent.showNormal() if parent.isMaximized() else parent.showMaximized()
+            )
+            self.closeBtn.clicked.connect(parent.close)
+
+    class FramelessWindow(QWidget):
+        def setTitleBar(self, title_bar: QWidget) -> None:
+            self._title_bar = title_bar
+
+
+USING_FLUENT_WIDGETS = True
+try:
+    from qfluentwidgets import (
+        CheckBox, ComboBox, DoubleSpinBox, FluentIcon as FIF, LineEdit, PasswordLineEdit,
+        PrimaryPushButton, PushButton, SpinBox, Theme, ToolButton, setTheme,
+    )
+except ModuleNotFoundError:
+    USING_FLUENT_WIDGETS = False
+    CheckBox = QCheckBox
+    ComboBox = QComboBox
+    DoubleSpinBox = QDoubleSpinBox
+    LineEdit = QLineEdit
+    SpinBox = QSpinBox
+    ToolButton = QToolButton
+
+    class Theme:
+        LIGHT = "light"
+
+    def setTheme(_: Any) -> None:
+        pass
+
+    class _FallbackIcon:
+        def icon(self, color: QColor | None = None) -> QIcon:
+            return QIcon()
+
+    class _FallbackIcons:
+        def __getattr__(self, _: str) -> _FallbackIcon:
+            return _FallbackIcon()
+
+    FIF = _FallbackIcons()
+
+    class PushButton(QPushButton):
+        def __init__(self, *args: Any) -> None:
+            parent: QWidget | None = None
+            icon: QIcon | None = None
+            text = ""
+            if len(args) == 1:
+                text = str(args[0])
+            elif len(args) >= 2 and hasattr(args[0], "icon"):
+                icon = args[0].icon()
+                text = str(args[1])
+                if len(args) >= 3:
+                    parent = args[2]
+            elif len(args) >= 2:
+                text = str(args[0])
+                parent = args[1]
+            super().__init__(text, parent)
+            if icon is not None:
+                self.setIcon(icon)
+
+    class PrimaryPushButton(PushButton):
+        pass
+
+    class PasswordLineEdit(QLineEdit):
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(parent)
+            self.setEchoMode(QLineEdit.EchoMode.Password)
 
 from xundao_game_client import fetch_game_data
 from xundao_game_session import (
     ATTRIBUTE_NAMES,
+    DESTINY_TRAVEL_COUNT_MAX,
     fetch_role_snapshot,
     run_chop_tasks,
+    run_destiny_travel_tasks,
     run_hero_rank_tasks,
     run_invade_tasks,
     run_star_trial_tasks,
@@ -48,6 +125,7 @@ from xundao_qr_login import (
 
 APP_TITLE = "寻道大千脚本助手"
 POLL_INTERVAL = 2.0
+UI_FONT_FAMILY = "PingFang SC" if sys.platform == "darwin" else "Microsoft YaHei UI"
 
 
 def app_dir() -> Path:
@@ -70,6 +148,7 @@ def read_config() -> dict[str, str]:
         "autoInvade": "false", "invadeCount": "5",
         "autoStarTrial": "false", "starTrialCount": "30",
         "autoHeroRank": "false", "heroRankCount": "10",
+        "autoDestinyTravel": "false", "destinyTravelCount": "10",
     }
     if not CONFIG_PATH.exists():
         return defaults
@@ -214,7 +293,7 @@ class XundaoWindow(FramelessWindow):
     def _apply_style(self) -> None:
         self.setStyleSheet("""
             QMainWindow, QDialog, #page { background: #f5f7f7; color: #27363b; }
-            QLabel { color: #27363b; font-family: "Microsoft YaHei UI"; }
+            QLabel { color: #27363b; }
             #appTitleBar { background: #ffffff; border-bottom: 1px solid #e6ebe9; }
             #topBar, #footer, #card { background: #ffffff; border: 1px solid #e6ebe9; border-radius: 6px; }
             #topBar, #footer { border-radius: 0; border-left: 0; border-right: 0; }
@@ -426,6 +505,11 @@ class XundaoWindow(FramelessWindow):
             limited_layout, 2, "群英榜", 10, config.get("autoHeroRank", "false"), config.get("heroRankCount", "10"),
             "当前体力 --/10",
         )
+        self.destiny_travel_enabled, self.destiny_travel_count, self.destiny_travel_remaining_label = self._add_limited_task_row(
+            limited_layout, 3, "仙友游历", DESTINY_TRAVEL_COUNT_MAX,
+            config.get("autoDestinyTravel", "false"), config.get("destinyTravelCount", "10"),
+            "当前体力 --",
+        )
         layout.addWidget(limited_task)
         layout.addStretch()
         return panel
@@ -450,7 +534,7 @@ class XundaoWindow(FramelessWindow):
         head = QHBoxLayout(); title = QLabel("▤  日志输出"); title.setObjectName("sectionTitle")
         clear = PushButton(FIF.DELETE, "清空日志"); clear.clicked.connect(lambda: self.log_text.clear())
         head.addWidget(title); head.addStretch(); head.addWidget(clear); layout.addLayout(head)
-        self.log_text = QPlainTextEdit(); self.log_text.setReadOnly(True); self.log_text.setFont(QFont("Microsoft YaHei UI", 9)); layout.addWidget(self.log_text)
+        self.log_text = QPlainTextEdit(); self.log_text.setReadOnly(True); self.log_text.setFont(QFont(UI_FONT_FAMILY, 9)); layout.addWidget(self.log_text)
         return panel
 
     def _footer(self) -> QFrame:
@@ -614,7 +698,8 @@ class XundaoWindow(FramelessWindow):
         run_invade = self.invade_enabled.isChecked()
         run_star_trial = self.star_trial_enabled.isChecked()
         run_hero_rank = self.hero_rank_enabled.isChecked()
-        if not any((run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank)):
+        run_destiny_travel = self.destiny_travel_enabled.isChecked()
+        if not any((run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank, run_destiny_travel)):
             self.append_log("请至少选择一个任务。")
             return
         action = "decompose" if self.action_input.currentIndex() == 1 else "stop"
@@ -630,6 +715,8 @@ class XundaoWindow(FramelessWindow):
             autoInvade=run_invade, invadeCount=self.invade_count.currentIndex() + 1,
             autoStarTrial=run_star_trial, starTrialCount=self.star_trial_count.currentIndex() + 1,
             autoHeroRank=run_hero_rank, heroRankCount=self.hero_rank_count.currentIndex() + 1,
+            autoDestinyTravel=run_destiny_travel,
+            destinyTravelCount=self.destiny_travel_count.currentIndex() + 1,
         )
         self.chop_stop_event = threading.Event()
         self.start_button.setEnabled(False); role = dict(self.current_role)
@@ -641,6 +728,7 @@ class XundaoWindow(FramelessWindow):
         invade_count = self.invade_count.currentIndex() + 1
         star_trial_count = self.star_trial_count.currentIndex() + 1
         hero_rank_count = self.hero_rank_count.currentIndex() + 1
+        destiny_travel_count = self.destiny_travel_count.currentIndex() + 1
         count_text = "无限次" if count is None else f"{count} 次"
         if run_wild_boss:
             self.append_log(
@@ -656,6 +744,7 @@ class XundaoWindow(FramelessWindow):
                     (run_invade, run_invade_tasks, invade_count, "异兽入侵"),
                     (run_star_trial, run_star_trial_tasks, star_trial_count, "星宿试炼"),
                     (run_hero_rank, run_hero_rank_tasks, hero_rank_count, "群英榜"),
+                    (run_destiny_travel, run_destiny_travel_tasks, destiny_travel_count, "仙友游历"),
                 ]
                 task_results = []
                 for enabled, runner, task_count, task_name in auxiliary_tasks:
@@ -737,6 +826,9 @@ class XundaoWindow(FramelessWindow):
                 self.invade_remaining_label.setText(f"今日剩余 {int(value.get('invadeRemaining', 0))}/5 次")
                 self.star_trial_remaining_label.setText(f"今日剩余 {int(value.get('starTrialRemaining', 0))}/30 次")
                 self.hero_rank_remaining_label.setText(f"当前体力 {int(value.get('heroRankEnergy', 0))}/10")
+                destiny_power = value.get("destinyPower")
+                destiny_text = "--" if destiny_power is None else str(int(destiny_power))
+                self.destiny_travel_remaining_label.setText(f"当前体力 {destiny_text}")
             self.account_meta.setText(
                 f"修为：{self.format_amount(value.get('cultivation', 0))}    "
                 f"妖力：{self.format_amount(value.get('power', 0))}"
@@ -752,7 +844,7 @@ class XundaoWindow(FramelessWindow):
             completed = value.get("completed", 0)
             remaining = value.get("remaining", 0)
             if value.get("reason") == "finished":
-                self.append_log(f"{task_name}任务完成，共挑战 {completed} 次，剩余 {remaining}。")
+                self.append_log(f"{task_name}任务完成，共执行 {completed} 次，剩余 {remaining}。")
             elif value.get("reason") == "stopped":
                 self.append_log(f"{task_name}已停止，共完成 {completed} 次，剩余 {remaining}。")
             else:
@@ -783,7 +875,25 @@ class XundaoWindow(FramelessWindow):
 
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app = QApplication(sys.argv); app.setFont(QFont("Microsoft YaHei UI", 10)); setTheme(Theme.LIGHT)
+    app = QApplication(sys.argv)
+    app.setFont(QFont(UI_FONT_FAMILY, 10))
+    if not USING_FLUENT_WIDGETS:
+        app.setStyle("Fusion")
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#f5f7f7"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor("#27363b"))
+        palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#f5f7f7"))
+        palette.setColor(QPalette.ColorRole.Text, QColor("#27363b"))
+        palette.setColor(QPalette.ColorRole.Button, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor("#27363b"))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor("#28a779"))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor("#9aa6aa"))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor("#9aa6aa"))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor("#9aa6aa"))
+        app.setPalette(palette)
+    setTheme(Theme.LIGHT)
     window = XundaoWindow(); window.show()
     return app.exec()
 
