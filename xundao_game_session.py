@@ -59,6 +59,11 @@ DESTINY_SYNC = 651
 DESTINY_TRAVEL = 20653
 DESTINY_TRAVEL_RESPONSE = 653
 DESTINY_TRAVEL_COUNT_MAX = 30
+PROFESSION_SYNC = 18002
+PROFESSION_BATTLE = 218004
+PROFESSION_BATTLE_RESPONSE = 18004
+PROFESSION_QUICK_DAILY_MAX = 1
+PROFESSION_CHALLENGE_DAILY_MAX = 30
 
 ATTRIBUTE_NAMES = {
     1: "攻击", 2: "生命", 3: "防御", 4: "速度",
@@ -375,6 +380,31 @@ def parse_destiny_power(payload: bytes) -> int | None:
     return int(power[0]) if power else None
 
 
+def parse_profession_state(payload: bytes) -> dict[str, int] | None:
+    fields = parse_protobuf(payload)
+    career_types = _values(fields, 1)
+    boss_data = _children(fields, 4)
+    if not career_types or not boss_data:
+        return None
+    passed = _values(boss_data[0], 1)
+    battle_times = _values(boss_data[0], 2)
+    repeat_times = _values(boss_data[0], 3)
+    return {
+        "careerType": int(career_types[0]),
+        "lastPassedBossId": int(passed[0]) if passed else 0,
+        "battleTimesToday": int(battle_times[0]) if battle_times else 0,
+        "repeatTimesToday": int(repeat_times[0]) if repeat_times else 0,
+    }
+
+
+def parse_profession_battle_win(payload: bytes) -> bool | None:
+    battle_records = _children(parse_protobuf(payload), 2)
+    if not battle_records:
+        return None
+    values = _values(battle_records[0], 3)
+    return bool(values[0]) if values else None
+
+
 class GameSession:
     def __init__(self, ws_address: str, player_id: int, token: str, timeout: float = 30) -> None:
         self.ws_address = ws_address
@@ -599,6 +629,27 @@ class GameSession:
             protobuf_int(1, 0),
         )
         return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def profession_state(self) -> dict[str, int] | None:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == PROFESSION_SYNC:
+                state = parse_profession_state(payload)
+                if state is not None:
+                    return state
+        return None
+
+    def profession_battle(self, boss_id: int, battle_type: int) -> dict[str, Any]:
+        if boss_id <= 0 or battle_type not in (1, 2):
+            raise ValueError("Invalid profession boss battle parameters")
+        response = self._request(
+            PROFESSION_BATTLE, PROFESSION_BATTLE_RESPONSE,
+            protobuf_int(1, boss_id) + protobuf_int(2, battle_type),
+        )
+        return {
+            "ret": response_ret(response),
+            "win": parse_profession_battle_win(response),
+            "payloadHex": response.hex(),
+        }
 
     def hero_rank_fight(self, rank_change_retries: int = 0) -> dict[str, Any]:
         if self._hero_rank_candidates is None:
@@ -831,6 +882,27 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
         ),
         None,
     )
+    profession_state = next(
+        (
+            state
+            for message_id, payload in reversed(frames)
+            if message_id == PROFESSION_SYNC
+            for state in [parse_profession_state(payload)]
+            if state is not None
+        ),
+        None,
+    )
+    snapshot["professionLastBossId"] = (
+        profession_state["lastPassedBossId"] if profession_state is not None else None
+    )
+    snapshot["professionQuickRemaining"] = (
+        max(0, PROFESSION_QUICK_DAILY_MAX - profession_state["repeatTimesToday"])
+        if profession_state is not None else None
+    )
+    snapshot["professionChallengeRemaining"] = (
+        max(0, PROFESSION_CHALLENGE_DAILY_MAX - profession_state["battleTimesToday"])
+        if profession_state is not None else None
+    )
     return snapshot
 
 
@@ -1030,6 +1102,98 @@ def run_destiny_travel_tasks(
             power_text = "等待同步" if power is None else str(power)
             log(f"第 {completed}/{target} 次仙友游历完成，当前体力 {power_text}。")
         return {"ret": 0, "completed": completed, "remaining": power, "reason": "finished"}
+
+
+def run_profession_quick_task(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if count != 1:
+        raise ValueError("Profession quick battle count must be 1")
+    login = _load_login(server_id, output_dir)
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        state = session.profession_state()
+        if state is None:
+            log("道途试炼状态读取失败，本次不会发起速战。")
+            return {"ret": None, "completed": 0, "remaining": None, "reason": "profession_state_unknown"}
+        remaining = max(0, PROFESSION_QUICK_DAILY_MAX - state["repeatTimesToday"])
+        if remaining == 0:
+            log("道途试炼今日速战次数已用完。")
+            return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
+        boss_id = state["lastPassedBossId"]
+        if boss_id <= 0:
+            log("道途试炼尚未通关任何关卡，无法速战上一关。")
+            return {"ret": None, "completed": 0, "remaining": remaining, "reason": "profession_no_passed_boss"}
+        if stop_event is not None and stop_event.is_set():
+            return {"ret": 0, "completed": 0, "remaining": remaining, "reason": "stopped"}
+        result = session.profession_battle(boss_id, 1)
+        if result["ret"] in (654, 18003):
+            log("道途试炼今日速战次数已用完。")
+            return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
+        if result["ret"] != 0:
+            log(f"道途试炼速战失败，服务端返回 {result['ret']}。")
+            return {
+                "ret": result["ret"], "completed": 0,
+                "remaining": remaining, "reason": "profession_quick_failed",
+            }
+        value = session.resource_snapshot(server_id); value["professionQuickRemaining"] = 0
+        if snapshot is not None:
+            snapshot(value)
+        log(f"道途试炼速战上一关完成，关卡 ID {boss_id}。")
+        return {"ret": 0, "completed": 1, "remaining": 0, "reason": "finished"}
+
+
+def run_profession_challenge_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if not 1 <= count <= PROFESSION_CHALLENGE_DAILY_MAX:
+        raise ValueError("Profession challenge count must be between 1 and 30")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        state = session.profession_state()
+        if state is None:
+            log("道途试炼状态读取失败，本次不会发起挑战。")
+            return {"ret": None, "completed": 0, "remaining": None, "reason": "profession_state_unknown"}
+        remaining = max(0, PROFESSION_CHALLENGE_DAILY_MAX - state["battleTimesToday"])
+        target = min(count, remaining)
+        boss_id = state["lastPassedBossId"] + 1 if state["lastPassedBossId"] > 0 else 50001
+        log(f"道途试炼今日剩余 {remaining}/30 次，计划挑战 {target} 次。")
+        for _ in range(target):
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "stopped"}
+            result = session.profession_battle(boss_id, 2)
+            if result["ret"] == 18003:
+                log("道途试炼今日挑战次数已用完。")
+                return {"ret": 0, "completed": completed, "remaining": 0, "reason": "finished"}
+            if result["ret"] != 0:
+                log(f"道途试炼挑战失败，服务端返回 {result['ret']}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": remaining, "reason": "profession_challenge_failed",
+                }
+            completed += 1
+            remaining = max(0, remaining - 1)
+            if result["win"] is None:
+                log(f"道途试炼关卡 ID {boss_id} 的战斗结果无法解析，任务停止。")
+                return {
+                    "ret": 0, "completed": completed,
+                    "remaining": remaining, "reason": "profession_result_unknown",
+                }
+            if result["win"] is False:
+                log(f"第 {completed}/{target} 次道途试炼未通过关卡 ID {boss_id}，继续挑战本关。")
+            else:
+                log(f"第 {completed}/{target} 次道途试炼挑战成功，通关关卡 ID {boss_id}。")
+                boss_id += 1
+            value = session.resource_snapshot(server_id)
+            value["professionLastBossId"] = boss_id - 1
+            value["professionChallengeRemaining"] = remaining
+            if snapshot is not None:
+                snapshot(value)
+        return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "finished"}
 
 
 def run_chop_tasks(

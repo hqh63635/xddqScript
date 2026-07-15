@@ -18,5 +18,8 @@
   "autoHeroRank": "false",
   "heroRankCount": "10",
   "autoDestinyTravel": "false",
-  "destinyTravelCount": "10"
+  "destinyTravelCount": "10",
+  "autoProfessionQuick": "false",
+  "autoProfessionChallenge": "false",
+  "professionChallengeCount": "30"
 }

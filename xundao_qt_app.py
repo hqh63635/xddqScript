@@ -108,11 +108,14 @@ from xundao_game_client import fetch_game_data
 from xundao_game_session import (
     ATTRIBUTE_NAMES,
     DESTINY_TRAVEL_COUNT_MAX,
+    PROFESSION_CHALLENGE_DAILY_MAX,
     fetch_role_snapshot,
     run_chop_tasks,
     run_destiny_travel_tasks,
     run_hero_rank_tasks,
     run_invade_tasks,
+    run_profession_challenge_tasks,
+    run_profession_quick_task,
     run_star_trial_tasks,
     run_wild_boss_tasks,
 )
@@ -149,6 +152,8 @@ def read_config() -> dict[str, str]:
         "autoStarTrial": "false", "starTrialCount": "30",
         "autoHeroRank": "false", "heroRankCount": "10",
         "autoDestinyTravel": "false", "destinyTravelCount": "10",
+        "autoProfessionQuick": "false", "autoProfessionChallenge": "false",
+        "professionChallengeCount": "30",
     }
     if not CONFIG_PATH.exists():
         return defaults
@@ -510,6 +515,19 @@ class XundaoWindow(FramelessWindow):
             config.get("autoDestinyTravel", "false"), config.get("destinyTravelCount", "10"),
             "当前体力 --",
         )
+        self.profession_quick_enabled = CheckBox("道途试炼速战")
+        self.profession_quick_enabled.setChecked(config.get("autoProfessionQuick", "false").lower() == "true")
+        self.profession_quick_remaining_label = QLabel("今日剩余 --/1 次")
+        self.profession_quick_remaining_label.setObjectName("muted")
+        limited_layout.addWidget(self.profession_quick_enabled, 4, 0)
+        limited_layout.addWidget(QLabel("速战上一关"), 4, 1)
+        limited_layout.addWidget(QLabel("每日 1 次"), 4, 2)
+        limited_layout.addWidget(self.profession_quick_remaining_label, 4, 3)
+        self.profession_challenge_enabled, self.profession_challenge_count, self.profession_challenge_remaining_label = self._add_limited_task_row(
+            limited_layout, 5, "道途试炼挑战", PROFESSION_CHALLENGE_DAILY_MAX,
+            config.get("autoProfessionChallenge", "false"), config.get("professionChallengeCount", "30"),
+            "今日剩余 --/30 次",
+        )
         layout.addWidget(limited_task)
         layout.addStretch()
         return panel
@@ -699,7 +717,12 @@ class XundaoWindow(FramelessWindow):
         run_star_trial = self.star_trial_enabled.isChecked()
         run_hero_rank = self.hero_rank_enabled.isChecked()
         run_destiny_travel = self.destiny_travel_enabled.isChecked()
-        if not any((run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank, run_destiny_travel)):
+        run_profession_quick = self.profession_quick_enabled.isChecked()
+        run_profession_challenge = self.profession_challenge_enabled.isChecked()
+        if not any((
+            run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank,
+            run_destiny_travel, run_profession_quick, run_profession_challenge,
+        )):
             self.append_log("请至少选择一个任务。")
             return
         action = "decompose" if self.action_input.currentIndex() == 1 else "stop"
@@ -717,6 +740,9 @@ class XundaoWindow(FramelessWindow):
             autoHeroRank=run_hero_rank, heroRankCount=self.hero_rank_count.currentIndex() + 1,
             autoDestinyTravel=run_destiny_travel,
             destinyTravelCount=self.destiny_travel_count.currentIndex() + 1,
+            autoProfessionQuick=run_profession_quick,
+            autoProfessionChallenge=run_profession_challenge,
+            professionChallengeCount=self.profession_challenge_count.currentIndex() + 1,
         )
         self.chop_stop_event = threading.Event()
         self.start_button.setEnabled(False); role = dict(self.current_role)
@@ -729,6 +755,7 @@ class XundaoWindow(FramelessWindow):
         star_trial_count = self.star_trial_count.currentIndex() + 1
         hero_rank_count = self.hero_rank_count.currentIndex() + 1
         destiny_travel_count = self.destiny_travel_count.currentIndex() + 1
+        profession_challenge_count = self.profession_challenge_count.currentIndex() + 1
         count_text = "无限次" if count is None else f"{count} 次"
         if run_wild_boss:
             self.append_log(
@@ -745,6 +772,11 @@ class XundaoWindow(FramelessWindow):
                     (run_star_trial, run_star_trial_tasks, star_trial_count, "星宿试炼"),
                     (run_hero_rank, run_hero_rank_tasks, hero_rank_count, "群英榜"),
                     (run_destiny_travel, run_destiny_travel_tasks, destiny_travel_count, "仙友游历"),
+                    (run_profession_quick, run_profession_quick_task, 1, "道途试炼速战"),
+                    (
+                        run_profession_challenge, run_profession_challenge_tasks,
+                        profession_challenge_count, "道途试炼挑战",
+                    ),
                 ]
                 task_results = []
                 for enabled, runner, task_count, task_name in auxiliary_tasks:
@@ -829,6 +861,12 @@ class XundaoWindow(FramelessWindow):
                 destiny_power = value.get("destinyPower")
                 destiny_text = "--" if destiny_power is None else str(int(destiny_power))
                 self.destiny_travel_remaining_label.setText(f"当前体力 {destiny_text}")
+                profession_quick = value.get("professionQuickRemaining")
+                profession_challenge = value.get("professionChallengeRemaining")
+                quick_text = "--" if profession_quick is None else str(int(profession_quick))
+                challenge_text = "--" if profession_challenge is None else str(int(profession_challenge))
+                self.profession_quick_remaining_label.setText(f"今日剩余 {quick_text}/1 次")
+                self.profession_challenge_remaining_label.setText(f"今日剩余 {challenge_text}/30 次")
             self.account_meta.setText(
                 f"修为：{self.format_amount(value.get('cultivation', 0))}    "
                 f"妖力：{self.format_amount(value.get('power', 0))}"
@@ -848,8 +886,14 @@ class XundaoWindow(FramelessWindow):
             elif value.get("reason") == "stopped":
                 self.append_log(f"{task_name}已停止，共完成 {completed} 次，剩余 {remaining}。")
             else:
+                reason_text = {
+                    "profession_challenge_lost": "当前关卡挑战未通过",
+                    "profession_result_unknown": "战斗结果无法解析",
+                    "profession_no_passed_boss": "尚无已通关关卡可供速战",
+                    "profession_state_unknown": "道途试炼状态未同步",
+                }.get(value.get("reason"), value.get("reason"))
                 self.append_log(
-                    f"{task_name}停止：{value.get('reason')}，服务端返回 {value.get('ret')}，"
+                    f"{task_name}停止：{reason_text}，服务端返回 {value.get('ret')}，"
                     f"已完成 {completed} 次。"
                 )
         elif event == "auxiliary_tasks_done":
