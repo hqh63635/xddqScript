@@ -21,5 +21,8 @@
   "destinyTravelCount": "10",
   "autoProfessionQuick": "false",
   "autoProfessionChallenge": "false",
-  "professionChallengeCount": "30"
+  "professionChallengeCount": "30",
+  "autoYardDaily": "false",
+  "autoYardDraw": "false",
+  "yardDrawCount": "1"
 }

@@ -118,6 +118,8 @@ from xundao_game_session import (
     run_profession_quick_task,
     run_star_trial_tasks,
     run_wild_boss_tasks,
+    run_yard_daily_tasks,
+    run_yard_draw_tasks,
 )
 from xundao_role_client import fetch_roles
 from xundao_qr_login import (
@@ -154,6 +156,7 @@ def read_config() -> dict[str, str]:
         "autoDestinyTravel": "false", "destinyTravelCount": "10",
         "autoProfessionQuick": "false", "autoProfessionChallenge": "false",
         "professionChallengeCount": "30",
+        "autoYardDaily": "false", "autoYardDraw": "false", "yardDrawCount": "1",
     }
     if not CONFIG_PATH.exists():
         return defaults
@@ -528,6 +531,17 @@ class XundaoWindow(FramelessWindow):
             config.get("autoProfessionChallenge", "false"), config.get("professionChallengeCount", "30"),
             "今日剩余 --/30 次",
         )
+        self.yard_daily_enabled = CheckBox("仙居日常")
+        self.yard_daily_enabled.setChecked(config.get("autoYardDaily", "false").lower() == "true")
+        yard_daily_desc = QLabel("收桃、收菜、炼丹、化外灵池")
+        yard_daily_desc.setObjectName("muted")
+        limited_layout.addWidget(self.yard_daily_enabled, 6, 0)
+        limited_layout.addWidget(yard_daily_desc, 6, 1, 1, 3)
+        self.yard_draw_enabled, self.yard_draw_count, self.yard_draw_remaining_label = self._add_limited_task_row(
+            limited_layout, 7, "仙居造物", 100,
+            config.get("autoYardDraw", "false"), config.get("yardDrawCount", "1"),
+            "消耗天工图纸",
+        )
         layout.addWidget(limited_task)
         layout.addStretch()
         return panel
@@ -719,9 +733,12 @@ class XundaoWindow(FramelessWindow):
         run_destiny_travel = self.destiny_travel_enabled.isChecked()
         run_profession_quick = self.profession_quick_enabled.isChecked()
         run_profession_challenge = self.profession_challenge_enabled.isChecked()
+        run_yard_daily = self.yard_daily_enabled.isChecked()
+        run_yard_draw = self.yard_draw_enabled.isChecked()
         if not any((
             run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank,
             run_destiny_travel, run_profession_quick, run_profession_challenge,
+            run_yard_daily, run_yard_draw,
         )):
             self.append_log("请至少选择一个任务。")
             return
@@ -743,6 +760,8 @@ class XundaoWindow(FramelessWindow):
             autoProfessionQuick=run_profession_quick,
             autoProfessionChallenge=run_profession_challenge,
             professionChallengeCount=self.profession_challenge_count.currentIndex() + 1,
+            autoYardDaily=run_yard_daily, autoYardDraw=run_yard_draw,
+            yardDrawCount=self.yard_draw_count.currentIndex() + 1,
         )
         self.chop_stop_event = threading.Event()
         self.start_button.setEnabled(False); role = dict(self.current_role)
@@ -756,6 +775,7 @@ class XundaoWindow(FramelessWindow):
         hero_rank_count = self.hero_rank_count.currentIndex() + 1
         destiny_travel_count = self.destiny_travel_count.currentIndex() + 1
         profession_challenge_count = self.profession_challenge_count.currentIndex() + 1
+        yard_draw_count = self.yard_draw_count.currentIndex() + 1
         count_text = "无限次" if count is None else f"{count} 次"
         if run_wild_boss:
             self.append_log(
@@ -777,6 +797,8 @@ class XundaoWindow(FramelessWindow):
                         run_profession_challenge, run_profession_challenge_tasks,
                         profession_challenge_count, "道途试炼挑战",
                     ),
+                    (run_yard_daily, run_yard_daily_tasks, 1, "仙居日常"),
+                    (run_yard_draw, run_yard_draw_tasks, yard_draw_count, "仙居造物"),
                 ]
                 task_results = []
                 for enabled, runner, task_count, task_name in auxiliary_tasks:

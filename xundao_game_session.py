@@ -64,6 +64,27 @@ PROFESSION_BATTLE = 218004
 PROFESSION_BATTLE_RESPONSE = 18004
 PROFESSION_QUICK_DAILY_MAX = 1
 PROFESSION_CHALLENGE_DAILY_MAX = 30
+YARD_ENTER = 215801
+YARD_ENTER_RESPONSE = 15801
+YARD_DRAW = 215822
+YARD_DRAW_RESPONSE = 15822
+YARD_BUILD_MAKE = 215825
+YARD_BUILD_MAKE_RESPONSE = 15825
+YARD_BUILD_GAIN_REWARD = 215827
+YARD_BUILD_GAIN_REWARD_RESPONSE = 15827
+YARD_LOGIN_SYNC = 15843
+YARD_BUILD_STATUS_SYNC = 15848
+YARD_MAKE_SYNC = 15849
+YARD_BUILD_FARMLAND = 1001
+YARD_BUILD_STOVE = 1002
+YARD_BUILD_TREE = 1003
+YARD_BUILD_CISTERN = 1004
+YARD_FARMLAND_PRODUCT = 100158
+YARD_DEFAULT_CROP = 400001
+YARD_PRODUCT_INTERVAL_MS = 300_000
+YARD_HERB_COST = 500
+YARD_ALCHEMY_MAX = 999
+YARD_DRAW_MAX = 100
 
 ATTRIBUTE_NAMES = {
     1: "攻击", 2: "生命", 3: "防御", 4: "速度",
@@ -405,6 +426,78 @@ def parse_profession_battle_win(payload: bytes) -> bool | None:
     return bool(values[0]) if values else None
 
 
+def parse_yard_buildings(payload: bytes) -> dict[int, dict[str, int]]:
+    """Decode the four functional buildings from YardEnterResp."""
+    buildings: dict[int, dict[str, int]] = {}
+    for area in _children(parse_protobuf(payload), 2):
+        for building in _children(area, 3):
+            cells = _children(building, 1)
+            details = _children(building, 2)
+            if not cells or not details:
+                continue
+            unique_ids = _values(cells[0], 1)
+            build_ids = _values(cells[0], 2)
+            if not unique_ids or not build_ids:
+                continue
+            build_id = int(build_ids[0])
+            if build_id not in {
+                YARD_BUILD_FARMLAND, YARD_BUILD_STOVE,
+                YARD_BUILD_TREE, YARD_BUILD_CISTERN,
+            }:
+                continue
+            detail = details[0]
+            values = {
+                "uniqueId": int(unique_ids[0]),
+                "buildId": build_id,
+                "level": int((_values(detail, 1) or [0])[0]),
+                "status": int((_values(detail, 2) or [0])[0]),
+                "productId": int((_values(detail, 3) or [0])[0]),
+                "startTime": int((_values(detail, 4) or [0])[0]),
+                "endTime": int((_values(detail, 5) or [0])[0]),
+                "collectNum": int((_values(detail, 6) or [0])[0]),
+                "totalNum": int((_values(detail, 8) or [0])[0]),
+            }
+            buildings[build_id] = values
+    return buildings
+
+
+def parse_yard_draw_data(payload: bytes) -> dict[str, int]:
+    draw_messages = _children(parse_protobuf(payload), 8)
+    if not draw_messages:
+        return {"freeDrawTimes": 0, "drawCount": 0, "ensureCount": 0, "adCount": 0}
+    draw = draw_messages[0]
+    return {
+        "freeDrawTimes": int((_values(draw, 1) or [0])[0]),
+        "drawCount": int((_values(draw, 2) or [0])[0]),
+        "ensureCount": int((_values(draw, 3) or [0])[0]),
+        "adCount": int((_values(draw, 4) or [0])[0]),
+    }
+
+
+def yard_build_finished(building: dict[str, int], now_ms: int | None = None) -> bool:
+    if building.get("status") != 1 or building.get("startTime", 0) <= 0:
+        return False
+    current = int(time.time() * 1000) if now_ms is None else now_ms
+    end_time = building.get("endTime", 0)
+    if end_time > 0:
+        return current >= end_time
+    if building.get("buildId") == YARD_BUILD_CISTERN:
+        remaining = max(0, building.get("totalNum", 0) - building.get("collectNum", 0))
+        return remaining > 0 and current >= building["startTime"] + remaining * YARD_PRODUCT_INTERVAL_MS
+    return False
+
+
+def yard_continuous_reward_available(
+    building: dict[str, int], now_ms: int | None = None,
+) -> bool:
+    if building.get("status") != 1 or building.get("startTime", 0) <= 0:
+        return False
+    if building.get("collectNum", 0) > 0:
+        return True
+    current = int(time.time() * 1000) if now_ms is None else now_ms
+    return current - building["startTime"] >= YARD_PRODUCT_INTERVAL_MS
+
+
 class GameSession:
     def __init__(self, ws_address: str, player_id: int, token: str, timeout: float = 30) -> None:
         self.ws_address = ws_address
@@ -648,6 +741,71 @@ class GameSession:
         return {
             "ret": response_ret(response),
             "win": parse_profession_battle_win(response),
+            "payloadHex": response.hex(),
+        }
+
+    def enter_yard(self) -> dict[str, Any]:
+        response = self._request(
+            YARD_ENTER, YARD_ENTER_RESPONSE,
+            protobuf_int(2, self.player_id),
+        )
+        return {
+            "ret": response_ret(response),
+            "buildings": parse_yard_buildings(response),
+            "drawData": parse_yard_draw_data(response),
+            "payloadHex": response.hex(),
+        }
+
+    def yard_grass_num(self) -> int | None:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id not in (YARD_LOGIN_SYNC, YARD_MAKE_SYNC):
+                continue
+            fields = parse_protobuf(payload)
+            grass = next(
+                (_decimal_text(field) for field in fields if field["field"] == 2),
+                None,
+            )
+            if grass is not None:
+                return int(grass)
+        return None
+
+    def yard_collect(self, building: dict[str, int]) -> dict[str, Any]:
+        response = self._request(
+            YARD_BUILD_GAIN_REWARD, YARD_BUILD_GAIN_REWARD_RESPONSE,
+            protobuf_int(1, building["uniqueId"])
+            + protobuf_int(2, building["buildId"]),
+        )
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def yard_make(
+        self, building: dict[str, int], count: int,
+        product_id: int | None = None,
+    ) -> dict[str, Any]:
+        if count <= 0:
+            raise ValueError("Yard production count must be positive")
+        payload = (
+            protobuf_int(1, building["uniqueId"])
+            + protobuf_int(2, building["buildId"])
+        )
+        if product_id is not None:
+            payload += protobuf_int(3, product_id)
+        payload += protobuf_int(4, count) + protobuf_int(5, 0)
+        response = self._request(YARD_BUILD_MAKE, YARD_BUILD_MAKE_RESPONSE, payload)
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def yard_draw(self, ten: bool = False) -> dict[str, Any]:
+        payload = (
+            protobuf_int(1, int(ten))
+            + protobuf_int(2, 0)
+            + protobuf_int(3, 0)
+            + protobuf_int(4, 0)
+        )
+        response = self._request(YARD_DRAW, YARD_DRAW_RESPONSE, payload)
+        fields = parse_protobuf(response)
+        rewards = len(_children(fields, 2))
+        return {
+            "ret": response_ret(response),
+            "count": rewards or (10 if ten else 1),
             "payloadHex": response.hex(),
         }
 
@@ -1194,6 +1352,181 @@ def run_profession_challenge_tasks(
             if snapshot is not None:
                 snapshot(value)
         return {"ret": 0, "completed": completed, "remaining": remaining, "reason": "finished"}
+
+
+def run_yard_daily_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if count != 1:
+        raise ValueError("Yard daily task count must be 1")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        entered = session.enter_yard()
+        if entered["ret"] != 0:
+            log(f"进入仙居失败，服务端返回 {entered['ret']}。")
+            return {
+                "ret": entered["ret"], "completed": 0,
+                "remaining": 1, "reason": "yard_enter_failed",
+            }
+        buildings = entered["buildings"]
+        if not buildings:
+            log("仙居内未读取到功能建筑，本次不会发送生产请求。")
+            return {
+                "ret": None, "completed": 0,
+                "remaining": 1, "reason": "yard_buildings_missing",
+            }
+
+        if stop_event is not None and stop_event.is_set():
+            return {"ret": 0, "completed": 0, "remaining": 1, "reason": "stopped"}
+
+        tree = buildings.get(YARD_BUILD_TREE)
+        if tree and yard_continuous_reward_available(tree):
+            result = session.yard_collect(tree)
+            if result["ret"] != 0:
+                log(f"仙桃树收取失败，服务端返回 {result['ret']}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": 1, "reason": "yard_tree_collect_failed",
+                }
+            completed += 1
+            log("仙桃树收桃完成。")
+        elif tree:
+            log("仙桃树当前没有可收取的仙桃。")
+
+        farmland = buildings.get(YARD_BUILD_FARMLAND)
+        if farmland and yard_continuous_reward_available(farmland):
+            result = session.yard_collect(farmland)
+            if result["ret"] != 0:
+                log(f"灵田收菜失败，服务端返回 {result['ret']}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": 1, "reason": "yard_farmland_collect_failed",
+                }
+            completed += 1
+            log("灵田收菜完成，正在检查可炼丹数量。")
+        elif farmland:
+            log("灵田当前没有可收取的灵草。")
+
+        stove = buildings.get(YARD_BUILD_STOVE)
+        stove_idle = bool(stove and stove.get("status") == 0)
+        if stove and yard_build_finished(stove):
+            result = session.yard_collect(stove)
+            if result["ret"] != 0:
+                log(f"炼丹炉收丹失败，服务端返回 {result['ret']}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": 1, "reason": "yard_alchemy_collect_failed",
+                }
+            completed += 1
+            stove_idle = True
+            log("炼丹炉收丹完成。")
+        elif stove and stove.get("status") == 1:
+            log("炼丹炉仍在炼制中，本次不重复操作。")
+        elif stove and stove.get("status") == 2:
+            log("炼丹炉正在升级，本次不启动炼丹。")
+
+        if stove and stove_idle:
+            grass = session.yard_grass_num()
+            if grass is None:
+                grass = session.item_count(YARD_FARMLAND_PRODUCT)
+            alchemy_count = min(YARD_ALCHEMY_MAX, grass // YARD_HERB_COST)
+            if alchemy_count > 0:
+                result = session.yard_make(stove, alchemy_count)
+                if result["ret"] != 0:
+                    log(f"炼丹启动失败，服务端返回 {result['ret']}。")
+                    return {
+                        "ret": result["ret"], "completed": completed,
+                        "remaining": 1, "reason": "yard_alchemy_start_failed",
+                    }
+                completed += 1
+                log(f"已消耗灵草启动炼丹，共 {alchemy_count} 次。")
+            else:
+                log(f"当前灵草 {grass}，不足 {YARD_HERB_COST}，不启动炼丹。")
+
+        cistern = buildings.get(YARD_BUILD_CISTERN)
+        cistern_idle = bool(cistern and cistern.get("status") == 0)
+        if cistern and yard_build_finished(cistern):
+            result = session.yard_collect(cistern)
+            if result["ret"] != 0:
+                log(f"化外灵池收取失败，服务端返回 {result['ret']}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": 1, "reason": "yard_cistern_collect_failed",
+                }
+            completed += 1
+            cistern_idle = True
+            log("化外灵池孕育完成，产物已收取。")
+        elif cistern and cistern.get("status") == 1:
+            log("化外灵池正在孕育中，本次不做处理。")
+        elif cistern and cistern.get("status") == 2:
+            log("化外灵池正在升级，本次不启动孕育。")
+
+        if cistern and cistern_idle:
+            product_id = cistern.get("productId") or YARD_DEFAULT_CROP
+            product_count = max(1, cistern.get("totalNum", 0))
+            result = session.yard_make(cistern, product_count, product_id)
+            if result["ret"] != 0:
+                log(f"化外灵池启动孕育失败，服务端返回 {result['ret']}。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": 1, "reason": "yard_cistern_start_failed",
+                }
+            completed += 1
+            log(f"化外灵池已开始孕育，产物 {product_id}，数量 {product_count}。")
+
+        if snapshot is not None:
+            snapshot(session.resource_snapshot(server_id))
+        return {"ret": 0, "completed": completed, "remaining": 0, "reason": "finished"}
+
+
+def run_yard_draw_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if not 1 <= count <= YARD_DRAW_MAX:
+        raise ValueError("Yard draw count must be between 1 and 100")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        entered = session.enter_yard()
+        if entered["ret"] != 0:
+            log(f"进入仙居失败，服务端返回 {entered['ret']}。")
+            return {
+                "ret": entered["ret"], "completed": 0,
+                "remaining": count, "reason": "yard_enter_failed",
+            }
+        free_available = entered["drawData"].get("freeDrawTimes", 0) < 1
+        log(f"仙居造物计划执行 {count} 次，免费次数{'可用' if free_available else '已使用'}。")
+        batches: list[bool] = []
+        remaining = count
+        if free_available and remaining > 0:
+            batches.append(False)
+            remaining -= 1
+        batches.extend([True] * (remaining // 10))
+        batches.extend([False] * (remaining % 10))
+        for ten in batches:
+            if stop_event is not None and stop_event.is_set():
+                return {
+                    "ret": 0, "completed": completed,
+                    "remaining": count - completed, "reason": "stopped",
+                }
+            result = session.yard_draw(ten)
+            if result["ret"] != 0:
+                log(f"仙居造物失败，服务端返回 {result['ret']}，不再继续消耗天工图纸。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": count - completed, "reason": "yard_draw_failed",
+                }
+            batch_count = 10 if ten else 1
+            completed += batch_count
+            log(f"仙居造物完成 {completed}/{count} 次。")
+        if snapshot is not None:
+            snapshot(session.resource_snapshot(server_id))
+        return {"ret": 0, "completed": completed, "remaining": 0, "reason": "finished"}
 
 
 def run_chop_tasks(
