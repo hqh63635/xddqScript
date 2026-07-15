@@ -569,7 +569,7 @@ class GameSession:
                     return energy
         return None
 
-    def hero_rank_fight(self) -> dict[str, Any]:
+    def hero_rank_fight(self, rank_change_retries: int = 0) -> dict[str, Any]:
         if self._hero_rank_candidates is None:
             list_response = self._request(
                 HERO_RANK_GET_LIST, HERO_RANK_GET_LIST_RESPONSE,
@@ -624,13 +624,24 @@ class GameSession:
         ])
         response = self._request(HERO_RANK_FIGHT, HERO_RANK_FIGHT_RESPONSE, payload)
         fields = parse_protobuf(response)
-        if response_ret(response) == 0:
+        ret = response_ret(response)
+        if ret == 3709 and rank_change_retries < 3:
+            list_response = self._request(
+                HERO_RANK_GET_LIST, HERO_RANK_GET_LIST_RESPONSE,
+                protobuf_int(1, 0),
+            )
+            if response_ret(list_response) != 0:
+                return {"ret": response_ret(list_response), "reason": "list_failed"}
+            fight_lists = _children(parse_protobuf(list_response), 2)
+            self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
+            return self.hero_rank_fight(rank_change_retries + 1)
+        if ret == 0:
             fight_lists = _children(fields, 7)
             self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
         player_info = _children(fields, 2)
         energy_values = _values(player_info[0], 1) if player_info else []
         return {
-            "ret": response_ret(response), "reason": "challenged", "opponent": opponent,
+            "ret": ret, "reason": "challenged", "opponent": opponent,
             "energy": int(energy_values[0]) if energy_values else None,
             "payloadHex": response.hex(),
         }
