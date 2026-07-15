@@ -1,0 +1,10 @@
+{
+  "pcToken": "",
+  "ctoken": "",
+  "sessionToken": "",
+  "selectedServerId": "",
+  "chopCount": "5",
+  "chopInterval": "2.0",
+  "equipmentAction": "stop",
+  "keepQuality": "5"
+}

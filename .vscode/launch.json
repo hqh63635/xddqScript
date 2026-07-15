@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试扫码登录窗口",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/xundao_login_app.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
+      "name": "调试命令行登录",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/xundao_qr_login.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    }
+  ]
+}
