@@ -374,6 +374,7 @@ class GameSession:
         self.equipped_items: list[dict[str, Any]] = []
         self.god_body_id = 0
         self._hero_rank_candidates: list[dict[str, Any]] | None = None
+        self._hero_rank = 0
         self._last_ping = 0.0
 
     def connect(self) -> None:
@@ -553,6 +554,8 @@ class GameSession:
             try:
                 response = self._request(HERO_RANK_ENTER, HERO_RANK_ENTER_RESPONSE)
                 if response_ret(response) == 0:
+                    ranks = _values(parse_protobuf(response), 4)
+                    self._hero_rank = int(ranks[0]) if ranks else 0
                     fight_lists = _children(parse_protobuf(response), 3)
                     self._hero_rank_candidates = (
                         _children(fight_lists[0], 2) if fight_lists else []
@@ -577,7 +580,10 @@ class GameSession:
             )
             if response_ret(list_response) != 0:
                 return {"ret": response_ret(list_response), "reason": "list_failed"}
-            fight_lists = _children(parse_protobuf(list_response), 2)
+            list_fields = parse_protobuf(list_response)
+            ranks = _values(list_fields, 4)
+            self._hero_rank = int(ranks[0]) if ranks else self._hero_rank
+            fight_lists = _children(list_fields, 2)
             self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
         candidates = self._hero_rank_candidates
         opponents = []
@@ -610,6 +616,11 @@ class GameSession:
                 "name": names,
                 "power": int(powers) if powers is not None else 0,
             })
+        opponents = [
+            opponent for opponent in opponents
+            if opponent["targetId"] != self.player_id
+            and (self._hero_rank <= 0 or opponent["rank"] < self._hero_rank)
+        ]
         if not opponents:
             return {"ret": None, "reason": "no_opponent"}
         opponent = min(opponents, key=lambda value: value["power"])
@@ -632,10 +643,15 @@ class GameSession:
             )
             if response_ret(list_response) != 0:
                 return {"ret": response_ret(list_response), "reason": "list_failed"}
-            fight_lists = _children(parse_protobuf(list_response), 2)
+            list_fields = parse_protobuf(list_response)
+            ranks = _values(list_fields, 4)
+            self._hero_rank = int(ranks[0]) if ranks else self._hero_rank
+            fight_lists = _children(list_fields, 2)
             self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
             return self.hero_rank_fight(rank_change_retries + 1)
         if ret == 0:
+            ranks = _values(fields, 3)
+            self._hero_rank = int(ranks[0]) if ranks else self._hero_rank
             fight_lists = _children(fields, 7)
             self._hero_rank_candidates = _children(fight_lists[0], 2) if fight_lists else []
         player_info = _children(fields, 2)
