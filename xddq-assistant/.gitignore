@@ -133,4 +133,7 @@ dist
 nodejs
 account.js
 
+# Backups created by tools/update-game-config.js
+.game-config-backups/
+
 test*

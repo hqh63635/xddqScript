@@ -12,7 +12,10 @@
     "passiveSkillList": "100001|100005|100011|100014",
     "compoundItemId": 131001,
     "compoundNum": 30,
-    "combineId": 12001
+    "combineId": 12001,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "121002": {
     "id": 121002,
@@ -27,7 +30,10 @@
     "passiveSkillList": "100002|100006|100012|100017",
     "compoundItemId": 131002,
     "compoundNum": 30,
-    "combineId": 12008
+    "combineId": 12008,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "121003": {
     "id": 121003,
@@ -42,7 +48,10 @@
     "passiveSkillList": "100003|100007|100013|100018",
     "compoundItemId": 131003,
     "compoundNum": 30,
-    "combineId": 12001
+    "combineId": 12001,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "121004": {
     "id": 121004,
@@ -57,7 +66,10 @@
     "passiveSkillList": "100004|100008|100014|100019",
     "compoundItemId": 131004,
     "compoundNum": 30,
-    "combineId": 12003
+    "combineId": 12003,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "121005": {
     "id": 121005,
@@ -72,7 +84,10 @@
     "passiveSkillList": "100022|100009|100015|100020",
     "compoundItemId": 131005,
     "compoundNum": 30,
-    "combineId": 12001
+    "combineId": 12001,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "121006": {
     "id": 121006,
@@ -87,7 +102,10 @@
     "passiveSkillList": "100023|100010|100016|100021",
     "compoundItemId": 131006,
     "compoundNum": 30,
-    "combineId": 12001
+    "combineId": 12001,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122001": {
     "id": 122001,
@@ -102,7 +120,10 @@
     "passiveSkillList": "101001|101005|101011|101016",
     "compoundItemId": 132001,
     "compoundNum": 30,
-    "combineId": 12007
+    "combineId": 12007,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122002": {
     "id": 122002,
@@ -117,7 +138,10 @@
     "passiveSkillList": "101002|101006|101012|101017",
     "compoundItemId": 132002,
     "compoundNum": 30,
-    "combineId": 12005
+    "combineId": 12005,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122003": {
     "id": 122003,
@@ -132,7 +156,10 @@
     "passiveSkillList": "101003|101007|101013|101018",
     "compoundItemId": 132003,
     "compoundNum": 30,
-    "combineId": 12004
+    "combineId": 12004,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122004": {
     "id": 122004,
@@ -147,7 +174,10 @@
     "passiveSkillList": "101004|101008|101014|101019",
     "compoundItemId": 132004,
     "compoundNum": 30,
-    "combineId": 12005
+    "combineId": 12005,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122005": {
     "id": 122005,
@@ -162,7 +192,10 @@
     "passiveSkillList": "101022|101009|101015|101020",
     "compoundItemId": 132005,
     "compoundNum": 30,
-    "combineId": 12002
+    "combineId": 12002,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122006": {
     "id": 122006,
@@ -177,7 +210,10 @@
     "passiveSkillList": "101023|101010|101016|101019",
     "compoundItemId": 132006,
     "compoundNum": 30,
-    "combineId": 12002
+    "combineId": 12002,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122007": {
     "id": 122007,
@@ -192,7 +228,10 @@
     "passiveSkillList": "101024|101009|101019|101021",
     "compoundItemId": 132007,
     "compoundNum": 30,
-    "combineId": 12010
+    "combineId": 12010,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "122008": {
     "id": 122008,
@@ -207,7 +246,10 @@
     "passiveSkillList": "101008|101009|101016|101021",
     "compoundItemId": 132008,
     "compoundNum": 30,
-    "combineId": 12010
+    "combineId": 12010,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123001": {
     "id": 123001,
@@ -222,7 +264,10 @@
     "passiveSkillList": "102001|102005|102011|102016",
     "compoundItemId": 133001,
     "compoundNum": 30,
-    "combineId": 12005
+    "combineId": 12005,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123002": {
     "id": 123002,
@@ -237,7 +282,10 @@
     "passiveSkillList": "102002|102006|102012|102017",
     "compoundItemId": 133002,
     "compoundNum": 30,
-    "combineId": 12007
+    "combineId": 12007,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123003": {
     "id": 123003,
@@ -252,7 +300,10 @@
     "passiveSkillList": "102003|102007|102013|102018",
     "compoundItemId": 133003,
     "compoundNum": 30,
-    "combineId": 12006
+    "combineId": 12006,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123004": {
     "id": 123004,
@@ -267,7 +318,10 @@
     "passiveSkillList": "102004|102008|102014|102019",
     "compoundItemId": 133004,
     "compoundNum": 30,
-    "combineId": 12002
+    "combineId": 12002,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123005": {
     "id": 123005,
@@ -282,7 +336,10 @@
     "passiveSkillList": "102005|102009|102015|102020",
     "compoundItemId": 133005,
     "compoundNum": 30,
-    "combineId": 12004
+    "combineId": 12004,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123006": {
     "id": 123006,
@@ -297,7 +354,10 @@
     "passiveSkillList": "102006|102010|102016|102021",
     "compoundItemId": 133006,
     "compoundNum": 30,
-    "combineId": 12007
+    "combineId": 12007,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123007": {
     "id": 123007,
@@ -312,7 +372,10 @@
     "passiveSkillList": "102007|102005|102015|102022",
     "compoundItemId": 133007,
     "compoundNum": 30,
-    "combineId": 12009
+    "combineId": 12009,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123008": {
     "id": 123008,
@@ -327,7 +390,10 @@
     "passiveSkillList": "102008|102006|102016|102023",
     "compoundItemId": 133008,
     "compoundNum": 30,
-    "combineId": 12009
+    "combineId": 12009,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "123009": {
     "id": 123009,
@@ -342,7 +408,10 @@
     "passiveSkillList": "102009|102007|102013|102024",
     "compoundItemId": 133009,
     "compoundNum": 30,
-    "combineId": 12008
+    "combineId": 12008,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124001": {
     "id": 124001,
@@ -357,7 +426,10 @@
     "passiveSkillList": "103001|103005|103011|103016",
     "compoundItemId": 134001,
     "compoundNum": 30,
-    "combineId": 12011
+    "combineId": 12011,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124002": {
     "id": 124002,
@@ -372,7 +444,10 @@
     "passiveSkillList": "103002|103006|103012|103017",
     "compoundItemId": 134002,
     "compoundNum": 30,
-    "combineId": 12013
+    "combineId": 12013,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124003": {
     "id": 124003,
@@ -387,7 +462,10 @@
     "passiveSkillList": "103003|103007|103013|103018",
     "compoundItemId": 134003,
     "compoundNum": 30,
-    "combineId": 12007
+    "combineId": 12007,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124004": {
     "id": 124004,
@@ -402,7 +480,10 @@
     "passiveSkillList": "103004|103008|103014|103019",
     "compoundItemId": 134004,
     "compoundNum": 30,
-    "combineId": 12011
+    "combineId": 12011,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124005": {
     "id": 124005,
@@ -417,7 +498,10 @@
     "passiveSkillList": "103005|103009|103015|103020",
     "compoundItemId": 134005,
     "compoundNum": 30,
-    "combineId": 12011
+    "combineId": 12011,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124006": {
     "id": 124006,
@@ -432,7 +516,10 @@
     "passiveSkillList": "103006|103010|103016|103021",
     "compoundItemId": 134006,
     "compoundNum": 30,
-    "combineId": 12006
+    "combineId": 12006,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124007": {
     "id": 124007,
@@ -447,7 +534,10 @@
     "passiveSkillList": "103007|103005|103015|103022",
     "compoundItemId": 134007,
     "compoundNum": 30,
-    "combineId": 12012
+    "combineId": 12012,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124008": {
     "id": 124008,
@@ -462,7 +552,10 @@
     "passiveSkillList": "103008|103006|103016|103023",
     "compoundItemId": 134008,
     "compoundNum": 30,
-    "combineId": 12012
+    "combineId": 12012,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124009": {
     "id": 124009,
@@ -477,7 +570,10 @@
     "passiveSkillList": "103009|103007|103013|103024",
     "compoundItemId": 134009,
     "compoundNum": 30,
-    "combineId": 12003
+    "combineId": 12003,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124010": {
     "id": 124010,
@@ -492,7 +588,10 @@
     "passiveSkillList": "103010|103009|103011|103015",
     "compoundItemId": 134010,
     "compoundNum": 30,
-    "combineId": 12010
+    "combineId": 12010,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "124011": {
     "id": 124011,
@@ -507,7 +606,10 @@
     "passiveSkillList": "103008|103010|103012|103014",
     "compoundItemId": 134011,
     "compoundNum": 30,
-    "combineId": 12012
+    "combineId": 12012,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125001": {
     "id": 125001,
@@ -522,7 +624,10 @@
     "passiveSkillList": "104001|104005|104011|104017",
     "compoundItemId": 135001,
     "compoundNum": 30,
-    "combineId": 12014
+    "combineId": 12014,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125002": {
     "id": 125002,
@@ -537,7 +642,10 @@
     "passiveSkillList": "104002|104006|104012|104011",
     "compoundItemId": 135002,
     "compoundNum": 30,
-    "combineId": 12014
+    "combineId": 12014,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125003": {
     "id": 125003,
@@ -552,7 +660,10 @@
     "passiveSkillList": "104003|104007|104013|104018",
     "compoundItemId": 135003,
     "compoundNum": 30,
-    "combineId": 12010
+    "combineId": 12010,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125004": {
     "id": 125004,
@@ -567,7 +678,10 @@
     "passiveSkillList": "104004|104008|104014|104019",
     "compoundItemId": 135004,
     "compoundNum": 30,
-    "combineId": 12008
+    "combineId": 12008,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125005": {
     "id": 125005,
@@ -582,7 +696,10 @@
     "passiveSkillList": "104005|104009|104015|104020",
     "compoundItemId": 135005,
     "compoundNum": 30,
-    "combineId": 12013
+    "combineId": 12013,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125006": {
     "id": 125006,
@@ -597,7 +714,10 @@
     "passiveSkillList": "104006|104010|104016|104021",
     "compoundItemId": 135006,
     "compoundNum": 30,
-    "combineId": 12014
+    "combineId": 12014,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125007": {
     "id": 125007,
@@ -612,7 +732,10 @@
     "passiveSkillList": "104007|104005|104015|104022",
     "compoundItemId": 135007,
     "compoundNum": 30,
-    "combineId": 12013
+    "combineId": 12013,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125008": {
     "id": 125008,
@@ -627,7 +750,10 @@
     "passiveSkillList": "104008|104006|104016|104023",
     "compoundItemId": 135008,
     "compoundNum": 30,
-    "combineId": 12012
+    "combineId": 12012,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125009": {
     "id": 125009,
@@ -642,7 +768,10 @@
     "passiveSkillList": "104009|104007|104013|104024",
     "compoundItemId": 135009,
     "compoundNum": 30,
-    "combineId": 12009
+    "combineId": 12009,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125010": {
     "id": 125010,
@@ -657,7 +786,10 @@
     "passiveSkillList": "104010|104009|104014|104019",
     "compoundItemId": 135010,
     "compoundNum": 30,
-    "combineId": 12012
+    "combineId": 12012,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125011": {
     "id": 125011,
@@ -672,7 +804,10 @@
     "passiveSkillList": "104008|104010|104015|104024",
     "compoundItemId": 135011,
     "compoundNum": 30,
-    "combineId": 12013
+    "combineId": 12013,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125012": {
     "id": 125012,
@@ -687,7 +822,10 @@
     "passiveSkillList": "104003|104007|104013|104018",
     "compoundItemId": 135012,
     "compoundNum": 30,
-    "combineId": 0
+    "combineId": 0,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125013": {
     "id": 125013,
@@ -702,7 +840,10 @@
     "passiveSkillList": "104008|104006|104016|104023",
     "compoundItemId": 135013,
     "compoundNum": 30,
-    "combineId": 12015
+    "combineId": 12015,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125014": {
     "id": 125014,
@@ -717,7 +858,10 @@
     "passiveSkillList": "104009|104007|104013|104024",
     "compoundItemId": 135014,
     "compoundNum": 30,
-    "combineId": 12015
+    "combineId": 12015,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125015": {
     "id": 125015,
@@ -732,7 +876,10 @@
     "passiveSkillList": "104007|104005|104015|104022",
     "compoundItemId": 135015,
     "compoundNum": 30,
-    "combineId": 12016
+    "combineId": 12016,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125016": {
     "id": 125016,
@@ -747,7 +894,10 @@
     "passiveSkillList": "104006|104010|104016|104021",
     "compoundItemId": 135016,
     "compoundNum": 30,
-    "combineId": 12016
+    "combineId": 12016,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
   },
   "125017": {
     "id": 125017,
@@ -762,6 +912,387 @@
     "passiveSkillList": "104010|104009|104014|104019",
     "compoundItemId": 135017,
     "compoundNum": 30,
-    "combineId": 12016
+    "combineId": 12016,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125018": {
+    "id": 125018,
+    "name": "Spirit_Name-125018",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250180",
+    "icon": "125018",
+    "activeSkill": 40058,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104008|104006|104016|104023",
+    "compoundItemId": 135018,
+    "compoundNum": 30,
+    "combineId": 12017,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125019": {
+    "id": 125019,
+    "name": "Spirit_Name-125019",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250190",
+    "icon": "125019",
+    "activeSkill": 40059,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104003|104007|104013|104020",
+    "compoundItemId": 135019,
+    "compoundNum": 30,
+    "combineId": 12017,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125020": {
+    "id": 125020,
+    "name": "Spirit_Name-125020",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250200",
+    "icon": "125020",
+    "activeSkill": 40060,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104003|104007|104013|104018",
+    "compoundItemId": 135020,
+    "compoundNum": 30,
+    "combineId": 0,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125021": {
+    "id": 125021,
+    "name": "Spirit_Name-125021",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250210",
+    "icon": "125021",
+    "activeSkill": 40061,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104007|104005|104015|104022",
+    "compoundItemId": 135021,
+    "compoundNum": 30,
+    "combineId": 12018,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125022": {
+    "id": 125022,
+    "name": "Spirit_Name-125022",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250220",
+    "icon": "125022",
+    "activeSkill": 40062,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104006|104010|104016|104021",
+    "compoundItemId": 135022,
+    "compoundNum": 30,
+    "combineId": 12018,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125023": {
+    "id": 125023,
+    "name": "Spirit_Name-125023",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250230",
+    "icon": "125023",
+    "activeSkill": 40063,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104010|104009|104014|104019",
+    "compoundItemId": 135023,
+    "compoundNum": 30,
+    "combineId": 12019,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125024": {
+    "id": 125024,
+    "name": "Spirit_Name-125024",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250240",
+    "icon": "125024",
+    "activeSkill": 40064,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104008|104006|104016|104023",
+    "compoundItemId": 135024,
+    "compoundNum": 30,
+    "combineId": 12019,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125025": {
+    "id": 125025,
+    "name": "Spirit_Name-125025",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250250",
+    "icon": "125025",
+    "activeSkill": 40065,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104003|104007|104013|104020",
+    "compoundItemId": 135025,
+    "compoundNum": 30,
+    "combineId": 12020,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125026": {
+    "id": 125026,
+    "name": "Spirit_Name-125026",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250260",
+    "icon": "125026",
+    "activeSkill": 40066,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104009|104007|104013|104024",
+    "compoundItemId": 135026,
+    "compoundNum": 30,
+    "combineId": 12020,
+    "isRemote": 0,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125027": {
+    "id": 125027,
+    "name": "Spirit_Name-125027",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250270",
+    "icon": "125027",
+    "activeSkill": 40067,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104006|104010|104016|104021",
+    "compoundItemId": 135027,
+    "compoundNum": 30,
+    "combineId": 12021,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125028": {
+    "id": 125028,
+    "name": "Spirit_Name-125028",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250280",
+    "icon": "125028",
+    "activeSkill": 40068,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104010|104009|104014|104019",
+    "compoundItemId": 135028,
+    "compoundNum": 30,
+    "combineId": 12021,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125029": {
+    "id": 125029,
+    "name": "Spirit_Name-125029",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250290",
+    "icon": "125029",
+    "activeSkill": 40069,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104008|104006|104016|104023",
+    "compoundItemId": 135029,
+    "compoundNum": 30,
+    "combineId": 12022,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125030": {
+    "id": 125030,
+    "name": "Spirit_Name-125030",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250300",
+    "icon": "125030",
+    "activeSkill": 40070,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104003|104007|104013|104020",
+    "compoundItemId": 135030,
+    "compoundNum": 30,
+    "combineId": 12022,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125036": {
+    "id": 125036,
+    "name": "Spirit_Name-125036",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250360",
+    "icon": "125036",
+    "activeSkill": 40076,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104007|104010|104016|104022",
+    "compoundItemId": 135036,
+    "compoundNum": 30,
+    "combineId": 12025,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125037": {
+    "id": 125037,
+    "name": "Spirit_Name-125037",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250370",
+    "icon": "125037",
+    "activeSkill": 40077,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104010|104006|104012|104020",
+    "compoundItemId": 135037,
+    "compoundNum": 30,
+    "combineId": 12025,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125038": {
+    "id": 125038,
+    "name": "Spirit_Name-125038",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250380",
+    "icon": "125038",
+    "activeSkill": 40078,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104006|104008|104014|104023",
+    "compoundItemId": 135038,
+    "compoundNum": 30,
+    "combineId": 12025,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125039": {
+    "id": 125039,
+    "name": "Spirit_Name-125039",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250390",
+    "icon": "125039",
+    "activeSkill": 40079,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104008|104005|104011|104021",
+    "compoundItemId": 135039,
+    "compoundNum": 30,
+    "combineId": 12026,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125040": {
+    "id": 125040,
+    "name": "Spirit_Name-125040",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250400",
+    "icon": "125040",
+    "activeSkill": 40080,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104005|104009|104015|104024",
+    "compoundItemId": 135040,
+    "compoundNum": 30,
+    "combineId": 12026,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125041": {
+    "id": 125041,
+    "name": "Spirit_Name-125041",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250410",
+    "icon": "125041",
+    "activeSkill": 40081,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104009|104007|104013|104019",
+    "compoundItemId": 135041,
+    "compoundNum": 30,
+    "combineId": 12027,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125042": {
+    "id": 125042,
+    "name": "Spirit_Name-125042",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250420",
+    "icon": "125042",
+    "activeSkill": 40082,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104007|104010|104016|104022",
+    "compoundItemId": 135042,
+    "compoundNum": 30,
+    "combineId": 12027,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
+  },
+  "125043": {
+    "id": 125043,
+    "name": "Spirit_Name-125043",
+    "desc": "0",
+    "quality": 5,
+    "weight": 0,
+    "appearanceId": "1250430",
+    "icon": "125043",
+    "activeSkill": 40083,
+    "gvgActiveSkill": 80058,
+    "passiveSkillList": "104010|104006|104012|104020",
+    "compoundItemId": 135043,
+    "compoundNum": 30,
+    "combineId": 12027,
+    "isRemote": 1,
+    "isBlock": 0,
+    "specialSkill": "0"
   }
 }
