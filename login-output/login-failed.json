@@ -1,0 +1,7 @@
+{
+  "data": null,
+  "success": false,
+  "retryable": false,
+  "errorCode": "USER_NOT_LOGIN",
+  "errorMsg": "用户未登录"
+}

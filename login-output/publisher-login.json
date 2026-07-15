@@ -1,0 +1,25 @@
+{
+  "code": 1,
+  "data": {
+    "app_domain": "sqwannet.com",
+    "app_ext": "eyJfcGFkXyI6Il9fIiwiYXBwX3BzdCI6IlpUQmhOMVZNTVROMGNIVnpSbkZTY0dGcmNEUXdSVVJsT1VOT1dFTjZTRXcxTmt3Mk1TOWlRbEJ3ZEhwcGFqUTJaMHRCTm1aa2VXRlVhVGMzZFhVeGNYcDVWa2h4VVRjdll6Uk5SU3QzVUdoSVZFWnZZVEF3VTNGU1FuRXpaVkp6U1hJNFpqRktkVEJCUjA1RlNsUjBjblpqYkd0RWEzZzViVmhFU2s1Tk5sWkpMMDlzYTJ4eVpHWnpkMDlLTlRCeU9EaFhkR3RRUkZVeFNWcGpWemhvYUdwU1RHNTBlRE13VWxvME1FSmxNekZYTUROUFZFUnJNemMwZVVnNFR6STJXRWMwWlRrcmNqaFBiVGhSUmpCUGJUVjJOVXBwVERsTmJ6QmFTVTloVW5WaVQybHJOek0xYjFrMmRuVnBkREl4V1ZVMVN3PT0iLCJhcHBpZCI6IjIwMjEwMDQxMjc2MjMzMDAiLCJoZF9zaWduIjoiMmM2NWMxNjY4NWQ0ODUyYSIsImhkX3N0aW1lIjoxNzg0MTA1MDc1LCJpbml0X2ZjbSI6eyJteXJuIjoxLCJ4ZmNuIjowLCJ4d3NtIjowfSwiaXNfbmV3IjowLCJpc19vaWQiOjEsIm9wZW5pZCI6IjAwNXlWbmJqZFgwQ0N6VGV1MXhZTjNKUGdRbzlBU0pDWFpXT2I1dHd2RGhCSE0xIiwic3FfZ2FtZV9pZCI6IjkzNiIsInVuaW9uaWQiOiIwMDUzdjl0bWd2aVJaQlBFdmR5MDI4a0p6QUxPbGNUSDZNdmE5YWlfMkd4QUFnNCIsInd4X3BhcmFtIjoie1wicmVmZXJlclwiOlwiaGF4eXh0Zl9nMV94bXRfcGNfemZiUENcIn0iLCJ3eF9zeXN0ZW1faW5mbyI6IntcInBsYXRmb3JtXCI6XCJ3aW5kb3dzXCIsXCJwY1BsYXRmb3JtXCI6XCJicm93c2VyXCIsXCJzeXN0ZW1cIjpcIldpbmRvd3MgMTFcIixcInZlcnNpb25cIjpcIjEwLjYuODBcIixcImxhbmd1YWdlXCI6XCJ6aC1DTlwiLFwibW9kZWxcIjpcIlBDXCIsXCJTREtWZXJzaW9uXCI6XCIzLjguMFwifSJ9",
+    "appid": "37zfbxyx",
+    "game_id": 239,
+    "guid": "ca4b5c81-1218-4f25-81f3-e9f148c915c8",
+    "id_verify": 1,
+    "id_verify_switch": 1,
+    "is_adult": -1,
+    "is_tg": 1,
+    "nickname": "",
+    "openid": "005yVnbjdX0CCzTeu1xYN3JPgQo9ASJCXZWOb5twvDhBHM1",
+    "referer": "",
+    "shared_switch": "",
+    "sign": "0446717b0b1e6807dd68dc7d67f64b85",
+    "subscribe_switch": "",
+    "time": 1784105075,
+    "uid": 2996289270,
+    "unionid": "0053v9tmgviRZBPEvdy028kJzALOlcTH6Mva9ai_2GxAAg4",
+    "wx_is_subscribe": 1
+  },
+  "msg": "success"
+}

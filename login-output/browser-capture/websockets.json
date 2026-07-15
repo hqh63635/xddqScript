@@ -1,0 +1,602 @@
+[
+  {
+    "url": "wss://proxy-xddq-40.kvps85.com/s4000867_ws",
+    "frames": [
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 50
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 31
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 15004
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 834
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 136
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 162066
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 43
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 51
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 24
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 25
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 93
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 39
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 3797
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 15332
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 6928
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 62
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 806
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 33
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 88
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 93
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 8209
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 6028
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 6353
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 26
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 33
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 43
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 36
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 20
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 38
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 24
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 63
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 3066
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 26
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 63
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 22
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 57
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 139
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 93
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 4832
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 62
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 24
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 62
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 62
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 62
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 62
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 73
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 78
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 117
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 23
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 122
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 122
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 126
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 132
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 24
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 25
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 728
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29400
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 3714
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 899
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 786
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 758
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 701
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 504
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 715
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 5848
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 22
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 21
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 23
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 81
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 80
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 36
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 32
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 23
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 309
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 1115
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 728
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 20
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 22
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 162
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 20
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 98
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 20
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 175
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 291
+      },
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 21
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 83
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 24248
+      },
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      },
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      },
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      },
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 273
+      },
+      {
+        "dir": "send",
+        "type": "bytes",
+        "len": 18
+      },
+      {
+        "dir": "recv",
+        "type": "bytes",
+        "len": 29
+      }
+    ]
+  }
+]

@@ -3,8 +3,10 @@
   "ctoken": "",
   "sessionToken": "",
   "selectedServerId": "",
-  "chopCount": "5",
+  "chopCount": "unlimited",
   "chopInterval": "2.0",
   "equipmentAction": "stop",
-  "keepQuality": "5"
+  "keepQuality": "5",
+  "keepAttributeType": "0",
+  "autoRankBattle": "false"
 }

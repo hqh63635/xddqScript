@@ -1,0 +1,16 @@
+{
+  "data": {
+    "userId": "2088902117293053",
+    "appId": "2021004127623300",
+    "authCode": "2bdaa924a2c14126bf5e3668431bOX05",
+    "successScopes": [
+      "auth_base"
+    ],
+    "state": "a0g1QXV0aEJhc2U2NENvZGU=",
+    "isvAppId": null
+  },
+  "success": true,
+  "retryable": false,
+  "errorCode": null,
+  "errorMsg": null
+}

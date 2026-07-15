@@ -17,7 +17,7 @@ import qrcode
 import requests
 import websocket
 from PIL import Image
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -30,7 +30,7 @@ from qfluentwidgets import (
 )
 
 from xundao_game_client import fetch_game_data
-from xundao_game_session import fetch_role_snapshot, run_chop_tasks
+from xundao_game_session import ATTRIBUTE_NAMES, fetch_role_snapshot, run_chop_tasks
 from xundao_role_client import fetch_roles
 from xundao_qr_login import (
     BASE_URL, DEFAULT_APP_ID, DEFAULT_ORIGIN, DEFAULT_UA, SERVICE,
@@ -55,8 +55,10 @@ OUTPUT_DIR = app_dir() / "login-output"
 def read_config() -> dict[str, str]:
     defaults = {
         "pcToken": "", "ctoken": "bigfish_ctoken_1ab4ieaf3e", "sessionToken": "",
-        "selectedServerId": "", "chopCount": "1", "chopInterval": "1.0",
+        "selectedServerId": "", "chopCount": "unlimited", "chopInterval": "1.0",
         "equipmentAction": "stop", "keepQuality": "5",
+        "keepAttributeType": "0", "keepAttributeValue": "0",
+        "autoRankBattle": "false",
     }
     if not CONFIG_PATH.exists():
         return defaults
@@ -175,6 +177,12 @@ class XundaoWindow(FramelessWindow):
         self.login_path: Path | None = None
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
+        self.chop_stop_event = threading.Event()
+        self.runtime_seconds = 0.0
+        self.runtime_started_at: float | None = None
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(1000)
+        self.runtime_timer.timeout.connect(self._update_runtime)
         self.event.connect(self._handle_event)
         self.stack = QStackedWidget(self)
         self.stack.setContentsMargins(0, 0, 0, 0)
@@ -325,15 +333,45 @@ class XundaoWindow(FramelessWindow):
         desc = QLabel("自动执行砍树任务并处理掉落装备"); desc.setObjectName("muted")
         title_row.addWidget(self.chop_enabled); title_row.addWidget(desc); title_row.addStretch(); task_layout.addLayout(title_row)
         form = QGridLayout(); form.setHorizontalSpacing(14); form.setVerticalSpacing(12)
-        self.count_input = SpinBox(); self.count_input.setRange(1, 10000); self.count_input.setValue(int(config["chopCount"]))
+        self.count_values: list[int | None] = [None, 1, 5, 10, 20, 50, 100, 500, 1000]
+        self.count_input = ComboBox(); self.count_input.addItems(["无限次", "1 次", "5 次", "10 次", "20 次", "50 次", "100 次", "500 次", "1000 次"])
+        saved_count = config.get("chopCount", "unlimited")
+        try:
+            count_value: int | None = int(saved_count)
+        except (TypeError, ValueError):
+            count_value = None
+        self.count_input.setCurrentIndex(self.count_values.index(count_value) if count_value in self.count_values else 0)
         self.interval_input = DoubleSpinBox(); self.interval_input.setRange(0, 60); self.interval_input.setSingleStep(0.5); self.interval_input.setValue(float(config["chopInterval"]))
         self.action_input = ComboBox(); self.action_input.addItems(["遇到装备停止", "自动分解"]); self.action_input.setCurrentIndex(1 if config["equipmentAction"] == "decompose" else 0)
-        self.quality_input = SpinBox(); self.quality_input.setRange(1, 20); self.quality_input.setValue(int(config["keepQuality"]))
+        self.quality_input = SpinBox(); self.quality_input.setRange(1, 45); self.quality_input.setValue(int(config["keepQuality"]))
+        self.attribute_values = [0, *ATTRIBUTE_NAMES.keys()]
+        self.attribute_input = ComboBox(); self.attribute_input.addItems(
+            ["不按属性保留", *[ATTRIBUTE_NAMES[value] for value in ATTRIBUTE_NAMES]]
+        )
+        saved_attribute = int(config.get("keepAttributeType", "0"))
+        self.attribute_input.setCurrentIndex(
+            self.attribute_values.index(saved_attribute) if saved_attribute in self.attribute_values else 0
+        )
+        self.quality_input.setEnabled(self.attribute_input.currentIndex() == 0)
+        self.attribute_input.currentIndexChanged.connect(
+            lambda index: self.quality_input.setEnabled(index == 0)
+        )
         form.addWidget(QLabel("砍树次数"), 0, 0); form.addWidget(self.count_input, 0, 1)
         form.addWidget(QLabel("装备处理"), 0, 2); form.addWidget(self.action_input, 0, 3)
         form.addWidget(QLabel("间隔时间"), 1, 0); form.addWidget(self.interval_input, 1, 1)
-        form.addWidget(QLabel("保留品质"), 1, 2); form.addWidget(self.quality_input, 1, 3)
+        form.addWidget(QLabel("保留品质（无属性条件时）"), 1, 2); form.addWidget(self.quality_input, 1, 3)
+        form.addWidget(QLabel("保留属性"), 2, 0); form.addWidget(self.attribute_input, 2, 1)
+        attribute_rule = QLabel("高于当前同部位装备时自动替换"); attribute_rule.setObjectName("muted")
+        form.addWidget(attribute_rule, 2, 2, 1, 2)
         task_layout.addLayout(form); layout.addWidget(task)
+        rank_task = Card(object_name="softCard"); rank_layout = QHBoxLayout(rank_task); set_margins(rank_layout, 16, 14, 16, 14)
+        self.rank_enabled = CheckBox("自动斗法")
+        self.rank_enabled.setChecked(config.get("autoRankBattle", "false").lower() == "true")
+        self.rank_ticket_label = QLabel("（挑战状：0 张）"); self.rank_ticket_label.setObjectName("muted")
+        rank_info = ToolButton(); rank_info.setIcon(FIF.INFO.icon(color=QColor("#7d8b90"))); rank_info.setFixedSize(28, 28)
+        rank_info.setToolTip("有挑战状时自动挑战妖力最低的可用对手；没有挑战状时继续等待砍树掉落。")
+        rank_layout.addWidget(self.rank_enabled); rank_layout.addWidget(self.rank_ticket_label); rank_layout.addWidget(rank_info); rank_layout.addStretch()
+        layout.addWidget(rank_task)
         layout.addStretch()
         return panel
 
@@ -354,16 +392,40 @@ class XundaoWindow(FramelessWindow):
         export_button = PushButton(FIF.SAVE_AS, "导出配置"); export_button.clicked.connect(lambda: self.append_log("导出配置功能暂未开放。"))
         self.start_button = PrimaryPushButton(FIF.PLAY, "启动脚本"); self.start_button.clicked.connect(self.start_chop)
         pause = PushButton(FIF.PAUSE, "暂停"); pause.clicked.connect(lambda: self.append_log("当前任务暂不支持暂停。"))
-        stop = PushButton(FIF.CANCEL, "停止"); stop.clicked.connect(lambda: self.append_log("当前任务将在安全节点停止。"))
-        stop.setStyleSheet("color:#d94f4f;")
+        self.stop_button = PushButton(FIF.CANCEL, "停止"); self.stop_button.clicked.connect(self.stop_chop)
+        self.stop_button.setStyleSheet("color:#d94f4f;")
         self.connection_status = QLabel("●  等待连接"); self.connection_status.setObjectName("statusGood")
-        runtime = QLabel("运行时长：00:00:00"); runtime.setObjectName("muted")
+        self.runtime_label = QLabel("运行时长：00:00:00"); self.runtime_label.setObjectName("muted")
         layout.addWidget(config); layout.addWidget(import_button); layout.addWidget(export_button)
         layout.addStretch(1)
-        layout.addWidget(self.start_button); layout.addWidget(pause); layout.addWidget(stop)
+        layout.addWidget(self.start_button); layout.addWidget(pause); layout.addWidget(self.stop_button)
         layout.addStretch(1)
-        layout.addWidget(self.connection_status); layout.addSpacing(24); layout.addWidget(runtime)
+        layout.addWidget(self.connection_status); layout.addSpacing(24); layout.addWidget(self.runtime_label)
         return footer
+
+    def _update_runtime(self) -> None:
+        elapsed = self.runtime_seconds
+        if self.runtime_started_at is not None:
+            elapsed += time.monotonic() - self.runtime_started_at
+        total_seconds = int(elapsed)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.runtime_label.setText(f"运行时长：{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+    def _start_runtime(self) -> None:
+        if self.runtime_started_at is not None:
+            return
+        self.runtime_started_at = time.monotonic()
+        self.runtime_timer.start()
+        self._update_runtime()
+
+    def _stop_runtime(self) -> None:
+        if self.runtime_started_at is None:
+            return
+        self.runtime_seconds += time.monotonic() - self.runtime_started_at
+        self.runtime_started_at = None
+        self.runtime_timer.stop()
+        self._update_runtime()
 
     def _select_role(self, index: int) -> None:
         if index < 0 or index >= len(self.roles): return
@@ -478,15 +540,38 @@ class XundaoWindow(FramelessWindow):
     def start_chop(self) -> None:
         if not self.current_role or not self.chop_enabled.isChecked(): return
         action = "decompose" if self.action_input.currentIndex() == 1 else "stop"
-        update_config(chopCount=self.count_input.value(), chopInterval=self.interval_input.value(), equipmentAction=action, keepQuality=self.quality_input.value())
+        count = self.count_values[self.count_input.currentIndex()]
+        saved_count = "unlimited" if count is None else count
+        attribute_type = self.attribute_values[self.attribute_input.currentIndex()]
+        update_config(
+            chopCount=saved_count, chopInterval=self.interval_input.value(), equipmentAction=action,
+            keepQuality=self.quality_input.value(), keepAttributeType=attribute_type,
+            autoRankBattle=self.rank_enabled.isChecked(),
+        )
+        self.chop_stop_event = threading.Event()
         self.start_button.setEnabled(False); role = dict(self.current_role)
-        count = self.count_input.value()
+        self._start_runtime()
         interval = self.interval_input.value()
         quality = self.quality_input.value()
-        self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count} 次。")
+        auto_rank_battle = self.rank_enabled.isChecked()
+        count_text = "无限次" if count is None else f"{count} 次"
+        self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count_text}。")
         def worker() -> None:
             try:
-                result = run_chop_tasks(int(role["serverId"]), OUTPUT_DIR, count, interval, action, quality, lambda msg: self.event.emit("chop_log", msg))
+                result = run_chop_tasks(
+                    int(role["serverId"]), OUTPUT_DIR, count, interval, action, quality,
+                    lambda msg: self.event.emit("chop_log", msg), self.chop_stop_event,
+                    keep_attribute_type=attribute_type,
+                    snapshot=lambda value: self.event.emit("profile_snapshot", value),
+                    auto_rank_battle=auto_rank_battle,
+                )
+                try:
+                    self.event.emit(
+                        "profile_snapshot",
+                        fetch_role_snapshot(int(role["serverId"]), OUTPUT_DIR),
+                    )
+                except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
+                    self.event.emit("profile_error", f"最终资源刷新失败：{type(exc).__name__}: {exc}")
                 self.event.emit("chop_success", result)
             except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
                 detail = traceback.format_exc()
@@ -496,6 +581,13 @@ class XundaoWindow(FramelessWindow):
                     pass
                 self.event.emit("chop_error", f"{type(exc).__name__}: {exc}")
         threading.Thread(target=worker, daemon=True).start()
+
+    def stop_chop(self) -> None:
+        if self.start_button.isEnabled():
+            self.append_log("当前没有正在运行的砍树任务。")
+            return
+        self.chop_stop_event.set()
+        self.append_log("已请求停止，当前操作完成后将安全退出。")
 
     def _handle_event(self, event: str, value: object) -> None:
         if event == "dashboard": self.show_dashboard(*value)
@@ -514,6 +606,8 @@ class XundaoWindow(FramelessWindow):
             self.resource_values["仙玉"].setText(self.format_amount(value.get("jade", 0)))
             self.resource_values["妖力"].setText(self.format_amount(value.get("power", 0)))
             self.resource_values["境界"].setText(str(value.get("realmId", "-")))
+            if hasattr(self, "rank_ticket_label"):
+                self.rank_ticket_label.setText(f"（挑战状：{value.get('rankBattleTicket', 0)} 张）")
             self.account_meta.setText(
                 f"修为：{self.format_amount(value.get('cultivation', 0))}    "
                 f"妖力：{self.format_amount(value.get('power', 0))}"
@@ -521,20 +615,26 @@ class XundaoWindow(FramelessWindow):
             self.append_log("角色资产与妖力数据加载完成。")
         elif event == "profile_error":
             self.append_log(f"角色详细数据读取失败：{value}")
-        elif event == "chop_error": self.start_button.setEnabled(True); self.append_log(f"连接或请求失败：{value}")
+        elif event == "chop_error":
+            self.start_button.setEnabled(True); self._stop_runtime()
+            self.append_log(f"连接或请求失败：{value}")
         elif event == "chop_success":
-            self.start_button.setEnabled(True); completed = value.get("completed", 0); reason = value.get("reason", "unknown")
+            self.start_button.setEnabled(True); self._stop_runtime()
+            completed = value.get("completed", 0); reason = value.get("reason", "unknown")
             messages = {
                 "finished": f"砍树任务完成，共执行 {completed} 次。",
+                "stopped": f"砍树任务已停止，共执行 {completed} 次。",
                 "kept": f"任务停止：发现需要保留的装备，共执行 {completed} 次。",
                 "unsafe_source": "安全停止：待处理列表中存在非砍树来源装备。",
                 "decompose_failed": f"自动分解失败，服务端返回 {value.get('ret')}。",
+                "replace_failed": f"装备替换失败，服务端返回 {value.get('ret')}。",
+                "reconnect_failed": f"游戏连接恢复失败：{value.get('error', '未知错误')}。",
                 "chop_failed": f"砍树请求失败，服务端返回 {value.get('ret')}。",
             }
             self.append_log(messages.get(reason, f"任务停止：{reason}，服务端返回 {value.get('ret')}。"))
 
     def closeEvent(self, event: Any) -> None:
-        self.stop_event.set(); super().closeEvent(event)
+        self.stop_event.set(); self.chop_stop_event.set(); super().closeEvent(event)
 
 
 def main() -> int:

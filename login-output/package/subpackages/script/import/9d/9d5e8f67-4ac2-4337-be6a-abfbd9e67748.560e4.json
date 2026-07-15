@@ -1,0 +1,1 @@
+[1,0,0,[["cc.TextAsset",["_name","text"],1]],[[0,0,1,3]],[[0,"ui.d","import { UIBase, ViewType, ViewAniType, ViewShaderType } from \"./UIBase\";\n\nexport type TUIBase = UIBase;\nexport type TViewType = ViewType;\nexport type TViewAniType = ViewAniType;\nexport type TViewShaderType = ViewShaderType;"]],0,0,[],[],[]]

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import json
+import re
 import struct
+import threading
 import time
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +17,7 @@ import websocket
 HEADER = 29099
 HEADER_SIZE = 18
 PLAYER_LOGIN = 20001
+PLAYER_PING = 20003
 LOGIN_SYNC_OVER = 2
 CHOP_TREE = 20203
 CHOP_TREE_RESPONSE = 203
@@ -21,6 +25,47 @@ DEAL_EQUIPMENT = 20202
 DEAL_EQUIPMENT_RESPONSE = 202
 GET_PENDING_EQUIPMENT = 20209
 GET_PENDING_EQUIPMENT_RESPONSE = 209
+RANK_BATTLE_GET_LIST = 20410
+RANK_BATTLE_GET_LIST_RESPONSE = 410
+RANK_BATTLE_CHALLENGE = 20412
+RANK_BATTLE_CHALLENGE_RESPONSE = 412
+RANK_BATTLE_TICKET = 100026
+RANK_BATTLE_TICKET_MAX = 3
+
+ATTRIBUTE_NAMES = {
+    1: "攻击", 2: "生命", 3: "防御", 4: "速度",
+    5: "击晕", 6: "暴击", 7: "连击", 8: "闪避", 9: "反击", 10: "吸血",
+    11: "抗击晕", 12: "抗暴击", 13: "抗连击", 14: "抗闪避", 15: "抗反击", 16: "抗吸血",
+    17: "攻击加成", 18: "生命加成", 19: "防御加成", 20: "速度加成",
+    21: "最终增伤", 22: "最终减伤", 23: "强化暴伤", 24: "弱化暴伤",
+    25: "强化治疗", 26: "弱化治疗", 27: "强化灵兽", 28: "弱化灵兽",
+    29: "强化战斗属性", 30: "弱化战斗抗性", 31: "强化道法伤害",
+    32: "忽视战斗属性", 33: "忽视战斗抗性", 34: "弱化道法伤害",
+    35: "格挡", 36: "抗格挡", 37: "破甲", 38: "抗破甲",
+}
+
+ITEM_NAMES = {
+    100000: "仙玉",
+    100003: "灵石",
+    100007: "灵兽果",
+    100016: "庚金",
+    RANK_BATTLE_TICKET: "挑战状",
+}
+
+
+def _decimal_text(field: dict[str, Any]) -> str | None:
+    text = field.get("text")
+    if isinstance(text, str) and text.isdecimal():
+        return text
+    raw = field.get("raw")
+    if isinstance(raw, bytes):
+        try:
+            value = raw.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+        if value.isdecimal():
+            return value
+    return None
 
 
 def encode_varint(value: int) -> bytes:
@@ -126,33 +171,91 @@ def parse_equipment(payload: bytes) -> list[dict[str, Any]]:
     found: dict[int, dict[str, Any]] = {}
     for message in _walk_messages(root):
         ids = _values(message, 1)
-        config_ids = _values(message, 2)
-        qualities = _values(message, 3)
-        slots = _values(message, 4)
+        equipment_ids = _values(message, 2)
+        realms_ids = _values(message, 3)
+        qualities = _values(message, 4)
         sources = _values(message, 6)
         attrs = _children(message, 5)
-        if not (ids and config_ids and qualities and slots and sources and attrs):
+        if not (ids and equipment_ids and realms_ids and qualities and sources and attrs):
             continue
-        # Equipment config IDs use the 7-digit 10xxyyzz form and quality is a
-        # small enum. This excludes similarly shaped role/loadout messages.
-        if int(config_ids[0]) < 1_000_000 or not 0 < int(qualities[0]) <= 20:
+        # The unique pending ID is seven digits, while equipmentId is the
+        # shorter equipment-table key. Quality is field 4 and can exceed 20
+        # at higher tree levels; field 3 is the realm/config progression ID.
+        if int(ids[0]) < 1_000_000 or not 0 < int(equipment_ids[0]) < 1_000_000:
+            continue
+        if not 0 < int(qualities[0]) <= 100 or int(sources[0]) <= 0:
             continue
         attributes = []
         for attr in attrs:
             types = _values(attr, 1)
             values = next((field.get("text") for field in attr if field["field"] == 2 and "text" in field), None)
             if types and values is not None:
-                attributes.append({"type": int(types[0]), "value": values})
+                attribute_type = int(types[0])
+                attributes.append({
+                    "type": attribute_type,
+                    "name": ATTRIBUTE_NAMES.get(attribute_type, f"属性{attribute_type}"),
+                    "value": values,
+                })
         equipment_id = int(ids[0])
         found[equipment_id] = {
             "id": equipment_id,
-            "configId": int(config_ids[0]),
+            "equipmentId": int(equipment_ids[0]),
+            "realmId": int(realms_ids[0]),
             "quality": int(qualities[0]),
-            "slot": int(slots[0]),
             "src": int(sources[0]),
             "attributes": attributes,
         }
     return list(found.values())
+
+
+def parse_chop_rewards(payload: bytes) -> list[dict[str, Any]]:
+    rewards: dict[int, int] = {}
+    for drop in _children(parse_protobuf(payload), 2):
+        reward_field = next((field for field in drop if field["field"] == 1 and "raw" in field), None)
+        if reward_field is None or not reward_field["raw"]:
+            continue
+        try:
+            reward_text = reward_field["raw"].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        for item_id, count in re.findall(r"(\d+)=(\d+)", reward_text):
+            rewards[int(item_id)] = rewards.get(int(item_id), 0) + int(count)
+    return [
+        {"id": item_id, "name": ITEM_NAMES.get(item_id, f"物品 {item_id}"), "count": count}
+        for item_id, count in rewards.items()
+    ]
+
+
+def parse_equipped_items(payload: bytes) -> list[dict[str, Any]]:
+    """Parse the active character's equipped items from message 201."""
+    items: list[dict[str, Any]] = []
+    for message in _children(parse_protobuf(payload), 5):
+        ids = _values(message, 1)
+        equipment_ids = _values(message, 2)
+        realms_ids = _values(message, 3)
+        qualities = _values(message, 4)
+        sources = _values(message, 6)
+        if not (ids and equipment_ids and realms_ids and qualities):
+            continue
+        attributes = []
+        for attr in _children(message, 5):
+            types = _values(attr, 1)
+            value = next((field.get("text") for field in attr if field["field"] == 2 and "text" in field), None)
+            if types and value is not None:
+                attribute_type = int(types[0])
+                attributes.append({
+                    "type": attribute_type,
+                    "name": ATTRIBUTE_NAMES.get(attribute_type, f"属性{attribute_type}"),
+                    "value": value,
+                })
+        equipment_id = int(equipment_ids[0])
+        items.append({
+            "id": int(ids[0]), "equipmentId": equipment_id,
+            "slot": equipment_id // 100, "realmId": int(realms_ids[0]),
+            "quality": int(qualities[0]), "src": int(sources[0]) if sources else 0,
+            "attributes": attributes,
+        })
+    return items
 
 
 def make_frame(message_id: int, player_id: int, payload: bytes = b"") -> bytes:
@@ -185,6 +288,10 @@ class GameSession:
         self.timeout = timeout
         self.socket: websocket.WebSocket | None = None
         self.login_frames: list[tuple[int, bytes]] = []
+        self.observed_frames: list[tuple[int, bytes]] = []
+        self.equipped_items: list[dict[str, Any]] = []
+        self.god_body_id = 0
+        self._last_ping = 0.0
 
     def connect(self) -> None:
         self.socket = websocket.create_connection(
@@ -193,6 +300,21 @@ class GameSession:
         payload = protobuf_string(1, self.token) + protobuf_string(2, "zh_cn") + protobuf_int(3, 0)
         self.socket.send_binary(make_frame(PLAYER_LOGIN, self.player_id, payload))
         self.login_frames = self._collect_login_sync()
+        self.observed_frames = list(self.login_frames)
+        player_data = [payload for message_id, payload in self.login_frames if message_id == 201]
+        if player_data:
+            self.equipped_items = parse_equipped_items(player_data[-1])
+            body_ids = _values(parse_protobuf(player_data[-1]), 6)
+            self.god_body_id = int(body_ids[0]) if body_ids else 0
+        self._send_heartbeat(force=True)
+
+    def _send_heartbeat(self, force: bool = False) -> None:
+        if self.socket is None:
+            raise RuntimeError("Game session is not connected")
+        now = time.monotonic()
+        if force or now - self._last_ping >= 5:
+            self.socket.send_binary(make_frame(PLAYER_PING, self.player_id))
+            self._last_ping = now
 
     def _collect_login_sync(self, timeout_messages: int = 400) -> list[tuple[int, bytes]]:
         if self.socket is None:
@@ -218,6 +340,8 @@ class GameSession:
             if not isinstance(data, bytes):
                 continue
             message_id, player_id, payload = parse_frame(data)
+            if player_id == self.player_id:
+                self.observed_frames.append((message_id, payload))
             if player_id == self.player_id and message_id == target_message_id:
                 return payload
         raise RuntimeError(f"Timed out waiting for game message {target_message_id}")
@@ -226,6 +350,7 @@ class GameSession:
         if self.socket is None:
             self.connect()
         assert self.socket is not None
+        self._send_heartbeat()
         self.socket.send_binary(make_frame(message_id, self.player_id, payload))
         return self._wait_for(response_id)
 
@@ -240,7 +365,55 @@ class GameSession:
         # The chop response also embeds the player's existing slot equipment;
         # the newly dropped pending item is the first equipment message.
         equipment = parse_equipment(response)
-        return {"ret": response_ret(response), "equipment": equipment[:1], "payloadHex": response.hex()}
+        return {
+            "ret": response_ret(response), "equipment": equipment[:1],
+            "rewards": parse_chop_rewards(response), "payloadHex": response.hex(),
+        }
+
+    def item_count(self, item_id: int) -> int:
+        inventory: dict[int, int] = {}
+        for message_id, payload in self.observed_frames:
+            if message_id != 301:
+                continue
+            for item in _children(parse_protobuf(payload), 1):
+                item_ids = _values(item, 1)
+                count = next(
+                    (_decimal_text(field) for field in item if field["field"] == 2),
+                    None,
+                )
+                if item_ids and count is not None:
+                    inventory[int(item_ids[0])] = int(count)
+        return inventory.get(item_id, 0)
+
+    def rank_battle(self) -> dict[str, Any]:
+        list_payload = self._request(RANK_BATTLE_GET_LIST, RANK_BATTLE_GET_LIST_RESPONSE)
+        if response_ret(list_payload) != 0:
+            return {"ret": response_ret(list_payload), "reason": "list_failed"}
+        opponents = []
+        now_ms = int(time.time() * 1000)
+        for index, entry in enumerate(_children(parse_protobuf(list_payload), 2)):
+            players = _children(entry, 1)
+            if not players:
+                continue
+            player = players[0]
+            names = next((field.get("text") for field in player if field["field"] == 3 and "text" in field), "未知对手")
+            powers = _values(player, 5)
+            protect_times = _values(entry, 3)
+            protect_end = int(protect_times[0]) if protect_times else 0
+            if protect_end > now_ms:
+                continue
+            opponents.append({"index": index, "name": names, "power": int(powers[0]) if powers else 0})
+        if not opponents:
+            return {"ret": None, "reason": "no_opponent"}
+        opponent = min(opponents, key=lambda value: value["power"])
+        response = self._request(
+            RANK_BATTLE_CHALLENGE, RANK_BATTLE_CHALLENGE_RESPONSE,
+            protobuf_int(1, opponent["index"]),
+        )
+        return {
+            "ret": response_ret(response), "reason": "challenged",
+            "opponent": opponent, "payloadHex": response.hex(),
+        }
 
     def decompose(self, equipment_ids: list[int]) -> dict[str, Any]:
         if not equipment_ids:
@@ -250,10 +423,32 @@ class GameSession:
         response = self._request(DEAL_EQUIPMENT, DEAL_EQUIPMENT_RESPONSE, payload)
         return {"ret": response_ret(response), "payloadHex": response.hex()}
 
+    def equip_and_resolve(self, equipment: dict[str, Any]) -> dict[str, Any]:
+        payload = (
+            protobuf_int(1, 2)
+            + protobuf_packed_ints(2, [equipment["id"]])
+            + protobuf_int(3, self.god_body_id)
+        )
+        response = self._request(DEAL_EQUIPMENT, DEAL_EQUIPMENT_RESPONSE, payload)
+        result = {"ret": response_ret(response), "payloadHex": response.hex()}
+        if result["ret"] == 0:
+            slot = equipment["equipmentId"] // 100
+            self.equipped_items = [item for item in self.equipped_items if item["slot"] != slot]
+            self.equipped_items.append({**equipment, "slot": slot})
+        return result
+
+    def equipped_for(self, equipment: dict[str, Any]) -> dict[str, Any] | None:
+        slot = equipment["equipmentId"] // 100
+        return next((item for item in self.equipped_items if item["slot"] == slot), None)
+
+    def resource_snapshot(self, server_id: int) -> dict[str, Any]:
+        return _snapshot_from_frames(server_id, self.observed_frames)
+
     def close(self) -> None:
         if self.socket is not None:
             self.socket.close()
             self.socket = None
+            self._last_ping = 0.0
 
     def __enter__(self) -> "GameSession":
         self.connect()
@@ -267,78 +462,229 @@ def _load_login(server_id: int, output_dir: Path) -> dict[str, Any]:
     return json.loads((output_dir / f"player-login-{server_id}.json").read_text(encoding="utf-8-sig"))
 
 
-def fetch_role_snapshot(server_id: int, output_dir: Path) -> dict[str, Any]:
-    """Read currency and player attributes from the login synchronization stream."""
-    login = _load_login(server_id, output_dir)
+def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> dict[str, Any]:
     snapshot: dict[str, Any] = {
         "serverId": server_id, "spiritStone": 0, "jade": 0,
         "power": "0", "cultivation": "0", "realmId": 0,
     }
-    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
-        for message_id, payload in session.login_frames:
-            fields = parse_protobuf(payload)
-            if message_id == 201:
-                realm = _values(fields, 1)
-                cultivation = next((field.get("text") for field in fields if field["field"] == 2 and "text" in field), None)
-                power = next((field.get("text") for field in fields if field["field"] == 3 and "text" in field), None)
-                if realm:
-                    snapshot["realmId"] = int(realm[0])
-                if power is not None:
-                    snapshot["power"] = power
-                if cultivation is not None:
-                    snapshot["cultivation"] = cultivation
-            elif message_id == 301:
-                inventory: dict[int, int] = {}
-                for item in _children(fields, 1):
-                    item_ids = _values(item, 1)
-                    count = next((field.get("text") for field in item if field["field"] == 2 and "text" in field), None)
-                    if item_ids and count is not None:
-                        inventory[int(item_ids[0])] = int(count)
-                snapshot["jade"] = inventory.get(100000, 0)
-                snapshot["spiritStone"] = inventory.get(100003, 0)
+    inventory: dict[int, int] = {}
+    for message_id, payload in frames:
+        fields = parse_protobuf(payload)
+        if message_id == 201:
+            realm = _values(fields, 1)
+            cultivation = next((field.get("text") for field in fields if field["field"] == 2 and "text" in field), None)
+            power = next((field.get("text") for field in fields if field["field"] == 3 and "text" in field), None)
+            if realm:
+                snapshot["realmId"] = int(realm[0])
+            if power is not None:
+                snapshot["power"] = power
+            if cultivation is not None:
+                snapshot["cultivation"] = cultivation
+        elif message_id == 301:
+            for item in _children(fields, 1):
+                item_ids = _values(item, 1)
+                count = next(
+                    (_decimal_text(field) for field in item if field["field"] == 2),
+                    None,
+                )
+                if item_ids and count is not None:
+                    inventory[int(item_ids[0])] = int(count)
+    snapshot["jade"] = inventory.get(100000, 0)
+    snapshot["spiritStone"] = inventory.get(100003, 0)
+    snapshot["rankBattleTicket"] = min(RANK_BATTLE_TICKET_MAX, inventory.get(RANK_BATTLE_TICKET, 0))
     return snapshot
+
+
+def fetch_role_snapshot(server_id: int, output_dir: Path) -> dict[str, Any]:
+    """Read currency and player attributes from the login synchronization stream."""
+    login = _load_login(server_id, output_dir)
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        return session.resource_snapshot(server_id)
 
 
 def run_chop_tasks(
     server_id: int,
     output_dir: Path,
-    count: int,
+    count: int | None,
     interval: float,
     equipment_action: str,
     keep_quality: int,
     log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    keep_attribute_type: int = 0,
+    keep_attribute_value: str = "0",
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+    auto_rank_battle: bool = False,
 ) -> dict[str, Any]:
     """Run sequential chops, resolving only verified tree-drop equipment."""
     login = _load_login(server_id, output_dir)
     completed = 0
+    if stop_event is not None and stop_event.is_set():
+        return {"ret": 0, "completed": completed, "reason": "stopped"}
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        initial_snapshot = session.resource_snapshot(server_id)
+        jade = int(initial_snapshot.get("jade", 0))
+        spirit_stone = int(initial_snapshot.get("spiritStone", 0))
+        rank_tickets = min(RANK_BATTLE_TICKET_MAX, session.item_count(RANK_BATTLE_TICKET))
+        missing_ticket_logged = False
+
+        def emit_snapshot() -> None:
+            nonlocal jade, spirit_stone
+            if snapshot is None:
+                return
+            value = session.resource_snapshot(server_id)
+            # Merge inventory pushes received by subsequent requests while
+            # retaining rewards parsed before the corresponding push arrives.
+            jade = max(jade, int(value.get("jade", 0)))
+            spirit_stone = max(spirit_stone, int(value.get("spiritStone", 0)))
+            value["jade"] = jade
+            value["spiritStone"] = spirit_stone
+            value["rankBattleTicket"] = rank_tickets
+            snapshot(value)
+
+        emit_snapshot()
         pending = session.get_pending_equipment()
-        for index in range(count):
+        while count is None or completed < count:
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "reason": "stopped"}
             equipment = pending
             if not equipment:
-                # The in-game automatic mode sends auto=true. Filtering and
-                # equipment decisions are still performed by the client.
-                result = session.chop_tree(auto=True)
+                # Python owns the repeated-task loop. Each request must remain
+                # a normal single chop, matching the browser payload 08001801;
+                # auto=true requires the game's separate auto-mode state.
+                result = session.chop_tree(auto=False)
+                (output_dir / f"chop-tree-{server_id}.json").write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
                 if result["ret"] != 0:
-                    log(f"第 {completed + 1}/{count} 次砍树被服务器拒绝，返回码 {result['ret']}。")
+                    target = "无限" if count is None else str(count)
+                    log(f"第 {completed + 1}/{target} 次砍树被服务器拒绝，返回码 {result['ret']}。")
                     return {"ret": result["ret"], "completed": completed, "reason": "chop_failed"}
                 equipment = result["equipment"] or session.get_pending_equipment()
                 completed += 1
-                log(f"第 {completed}/{count} 次砍树成功。")
+                target = "无限" if count is None else str(count)
+                log(f"第 {completed}/{target} 次砍树成功。")
+                for reward in result["rewards"]:
+                    log(f"砍树掉落：{reward['name']} x{reward['count']}。")
+                    if reward["id"] == 100000:
+                        jade += reward["count"]
+                    elif reward["id"] == 100003:
+                        spirit_stone += reward["count"]
+                    elif reward["id"] == RANK_BATTLE_TICKET:
+                        rank_tickets = min(RANK_BATTLE_TICKET_MAX, rank_tickets + reward["count"])
+                        missing_ticket_logged = False
+                emit_snapshot()
             if equipment:
-                summary = "，".join(f"ID {e['id']} 品质 {e['quality']} 来源 {e['src']}" for e in equipment)
-                log(f"待处理装备：{summary}")
+                for item in equipment:
+                    attributes = "、".join(
+                        f"{attr['name']} {attr['value']}" for attr in item["attributes"]
+                    ) or "无属性"
+                    log(
+                        f"待处理装备：ID {item['id']} 装备 {item['equipmentId']} "
+                        f"品质 {item['quality']} 来源 {item['src']}；属性：{attributes}"
+                    )
                 unsafe = [e for e in equipment if e["src"] != 1]
                 if unsafe:
                     return {"ret": None, "completed": completed, "reason": "unsafe_source", "equipment": unsafe}
-                keep = [e for e in equipment if e["quality"] >= keep_quality]
-                if equipment_action != "decompose" or keep:
-                    return {"ret": 0, "completed": completed, "reason": "kept", "equipment": keep or equipment}
-                deal = session.decompose([e["id"] for e in equipment])
-                if deal["ret"] != 0:
-                    return {"ret": deal["ret"], "completed": completed, "reason": "decompose_failed"}
-                log(f"已自动分解 {len(equipment)} 件砍树装备。")
+                if equipment_action != "decompose":
+                    return {"ret": 0, "completed": completed, "reason": "kept", "equipment": equipment}
+
+                def attribute_value(item: dict[str, Any] | None) -> Decimal:
+                    if item is None:
+                        return Decimal(0)
+                    attr = next(
+                        (value for value in item["attributes"] if value["type"] == keep_attribute_type),
+                        None,
+                    )
+                    try:
+                        return Decimal(attr["value"]) if attr else Decimal(0)
+                    except InvalidOperation:
+                        return Decimal(0)
+
+                to_decompose: list[dict[str, Any]] = []
+                if keep_attribute_type > 0:
+                    attribute_name = ATTRIBUTE_NAMES.get(keep_attribute_type, f"属性{keep_attribute_type}")
+                    for item in equipment:
+                        current = session.equipped_for(item)
+                        new_value = attribute_value(item)
+                        current_value = attribute_value(current)
+                        if current is None or new_value > current_value:
+                            replace = session.equip_and_resolve(item)
+                            if replace["ret"] != 0:
+                                return {
+                                    "ret": replace["ret"], "completed": completed,
+                                    "reason": "replace_failed", "equipment": [item],
+                                }
+                            previous = "该部位未装备" if current is None else f"当前 {current_value}"
+                            log(
+                                f"已替换装备 ID {item['id']}：{attribute_name} 新装备 {new_value}，"
+                                f"{previous}。旧装备已分解。"
+                            )
+                            emit_snapshot()
+                        else:
+                            log(
+                                f"装备 ID {item['id']} 不替换：{attribute_name} 新装备 {new_value} "
+                                f"<= 当前 {current_value}，将分解新装备。"
+                            )
+                            to_decompose.append(item)
+                else:
+                    keep = [item for item in equipment if item["quality"] >= keep_quality]
+                    if keep:
+                        for item in keep:
+                            log(f"保留装备 ID {item['id']}：品质 {item['quality']} >= {keep_quality}。")
+                        return {"ret": 0, "completed": completed, "reason": "kept", "equipment": keep}
+                    to_decompose = equipment
+
+                if to_decompose:
+                    deal = session.decompose([item["id"] for item in to_decompose])
+                    if deal["ret"] != 0:
+                        return {"ret": deal["ret"], "completed": completed, "reason": "decompose_failed"}
+                    log(f"已自动分解 {len(to_decompose)} 件未提升指定属性的砍树装备。")
+                    emit_snapshot()
                 pending = []
-            if index + 1 < count and interval > 0:
-                time.sleep(interval)
+            if auto_rank_battle:
+                if rank_tickets <= 0:
+                    if not missing_ticket_logged:
+                        log("无法斗法：缺少挑战状，等待后续砍树掉落。")
+                        missing_ticket_logged = True
+                else:
+                    try:
+                        log(f"检测到挑战状 {rank_tickets} 张，正在获取可挑战对手。")
+                        battle = session.rank_battle()
+                        if battle["ret"] == 0:
+                            rank_tickets -= 1
+                            emit_snapshot()
+                            opponent = battle["opponent"]
+                            log(
+                                f"斗法完成：对手 {opponent['name']}，妖力 {opponent['power']}，"
+                                f"剩余挑战状 {rank_tickets}。"
+                            )
+                        elif battle["reason"] == "no_opponent":
+                            log("无法斗法：当前没有可挑战的对手。")
+                        else:
+                            log(f"斗法请求失败，服务端返回 {battle['ret']}，继续砍树轮询。")
+                    except (OSError, RuntimeError, websocket.WebSocketException) as exc:
+                        log(f"斗法连接中断：{type(exc).__name__}，正在重连并继续砍树轮询。")
+                        try:
+                            session.close()
+                            session.connect()
+                            pending = session.get_pending_equipment()
+                            reconnected_snapshot = session.resource_snapshot(server_id)
+                            jade = int(reconnected_snapshot.get("jade", 0))
+                            spirit_stone = int(reconnected_snapshot.get("spiritStone", 0))
+                            rank_tickets = min(RANK_BATTLE_TICKET_MAX, session.item_count(RANK_BATTLE_TICKET))
+                            emit_snapshot()
+                            log("游戏连接已恢复，继续执行砍树和斗法任务。")
+                        except (OSError, RuntimeError, websocket.WebSocketException) as reconnect_exc:
+                            return {
+                                "ret": None, "completed": completed,
+                                "reason": "reconnect_failed", "error": str(reconnect_exc),
+                            }
+            has_more = count is None or completed < count
+            if has_more and interval > 0:
+                if stop_event is not None:
+                    if stop_event.wait(interval):
+                        return {"ret": 0, "completed": completed, "reason": "stopped"}
+                else:
+                    time.sleep(interval)
     return {"ret": 0, "completed": completed, "reason": "finished"}

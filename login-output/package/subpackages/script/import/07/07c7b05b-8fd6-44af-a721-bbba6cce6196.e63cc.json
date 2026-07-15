@@ -1,0 +1,1 @@
+[1,0,0,[["cc.TextAsset",["_name","text"],1]],[[0,0,1,3]],[[0,"mgr.d","import { MgrBase } from \"./MgrBase\";\nimport { ModelBase } from \"../data/ModelBase\";\n\nexport type TMgrBase<T extends ModelBase = ModelBase> = MgrBase<T>;\n"]],0,0,[],[],[]]

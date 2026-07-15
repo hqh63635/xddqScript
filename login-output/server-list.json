@@ -1,0 +1,106 @@
+{
+  "serverList": [
+    {
+      "serverId": 4000589,
+      "labelName": "炫彩云",
+      "serverName": "炫彩云9服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4000589_http",
+      "serverState": 1,
+      "serverType": 0,
+      "specialType": 0,
+      "openTime": 1737216000000,
+      "preRegisterTime": 0,
+      "preRegisterFull": false,
+      "new": false
+    },
+    {
+      "serverId": 4000047,
+      "labelName": "星河云",
+      "serverName": "星河云7服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4000047_http",
+      "serverState": 1,
+      "serverType": 0,
+      "specialType": 0,
+      "openTime": 1706839200000,
+      "preRegisterTime": 0,
+      "preRegisterFull": false,
+      "new": false
+    },
+    {
+      "serverId": 4001683,
+      "labelName": "魑魅云",
+      "serverName": "魑魅云13服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4001683_http",
+      "serverState": 1,
+      "serverType": 0,
+      "specialType": 0,
+      "openTime": 1784094060000,
+      "preRegisterTime": 0,
+      "preRegisterFull": false,
+      "new": true
+    },
+    {
+      "serverId": 4000867,
+      "labelName": "幽梦云",
+      "serverName": "幽梦云7服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4000867_http",
+      "serverState": 1,
+      "serverType": 0,
+      "specialType": 0,
+      "openTime": 1739531100000,
+      "preRegisterTime": 0,
+      "preRegisterFull": false,
+      "new": false
+    },
+    {
+      "serverId": 4001682,
+      "labelName": "魑魅云",
+      "serverName": "魑魅云12服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4001682_http",
+      "serverState": 1,
+      "serverType": 0,
+      "specialType": 0,
+      "openTime": 1784044800000,
+      "preRegisterTime": 0,
+      "preRegisterFull": false,
+      "new": true
+    }
+  ],
+  "playerServerList": [
+    4000867,
+    4000047,
+    4000589
+  ],
+  "reCallPlayer": false,
+  "notice": {
+    "channelId": 0,
+    "language": null,
+    "workPlatform": "",
+    "content": "{{size=26}}小小妖怪欲登仙，千年修炼化瞬间。仙树法宝增修行，游历四海修大道。一梦醒来，又见修为长矣！{{/size}}#{{size=26}}关注【寻道大千-游戏圈】获得最新资讯及游戏攻略！ {{/size}}#{{size=26}}关注【寻道大千-游戏中心】领海量礼包福利！ {{/size}}#{{size=26}}进入游戏点击头像，输入“VIP2026”领取专属福利。{{/size}}# #{{size=26}}【更新公告】{{/size}}#{{size=26}}亲爱的诸位道友，为了给大家带来更好的修仙体验，我们将于2026年6月30日进行停服更新。在此期间，诸位将暂时无法踏入仙界。升级完成后，我等将奉上奖励以示谢意，感谢诸位的支持！{{/size}}#{{size=26}}“更新方式”：停服更新{{/size}}#{{size=26}}“更新时间”：2026年6月30日 15:00-16:00{{/size}}#{{size=26}}“更新内容”：服务器优化升级{{/size}}# #{{size=26}}最新服已于今日开启 {{/size}}#{{size=26}}【开服活动】  {{/size}}#{{size=26}}“七日签到”奇珍异兽待君领 {{/size}}#{{size=26}}“开服庆典”珍稀资源免费换 {{/size}}#{{size=26}}“运势”逆天改命降灵兽 {{/size}}#{{size=26}}“遗迹争霸”群妖争霸谁敢挡 {{/size}}#{{size=26}}“关卡冲榜”战力无双，横压一世 {{/size}}#{{size=26}}“首充特惠”获取限定装备、精怪、灵兽{{/size}}#{{size=26}}【防诈骗公告】{{/size}}#{{size=26}}道友们修仙渡劫时，需提高警惕，仔细甄别以下常规的骗术套路，谨防受骗：{{/size}}#{{size=26}} 1、[世界聊天等发布买卖信息]在世界聊天以“送稀有道具、稀有装备、充值折扣、游戏代练”等为噱头，引导玩家添加QQ、微信诈骗，以及在世界聊天上发布买卖信息的行为都会进行永久封号；{{/size}}#{{size=26}} 2、[世界聊天等发布充值福利]在世界聊天以“福利号、免费领取XX充值”等噱头，引导玩家添加QQ、微信诈骗等行为都会进行永久封号；{{/size}}#{{size=26}} 3、[妖盟]在盟内引导线下群，进行其他游戏宣传或第三方充值渠道等引导，一经发现都会进行永久封号； 请道友们切勿尝试。{{/size}}",
+    "title": "一斧在手 修仙无忧",
+    "tishenWorks": "开发团队承诺积极履行《网络游戏行业防沉迷自律公约》#著作权人：上海萌野网络科技有限公司 游戏名：《寻道大千》 出版单位：海南省电子音像出版社有限公司#出版物号：ISBN 978-7-498-08243-5 审批文号：国新出审[2020]2276 号",
+    "works": "开发团队承诺积极履行《网络游戏行业防沉迷自律公约》#著作权人：上海萌野网络科技有限公司 游戏名：《寻道大千》 出版单位：海南省电子音像出版社有限公司#出版物号：ISBN 978-7-498-08243-5 审批文号：国新出审[2020]2276 号",
+    "qq": ""
+  },
+  "works": "开发团队承诺积极履行《网络游戏行业防沉迷自律公约》#著作权人：上海萌野网络科技有限公司 游戏名：《寻道大千》 出版单位：海南省电子音像出版社有限公司#出版物号：ISBN 978-7-498-08243-5 审批文号：国新出审[2020]2276 号",
+  "recommendServerId": 4000867,
+  "labelNameList": [],
+  "labelNameMap": {},
+  "configVersion": "0",
+  "activitySceneSwitch": "12",
+  "activitySmallSceneSwitch": "1|9|10",
+  "festivalSceneSwitch": "4",
+  "timeZone": 8,
+  "serverTime": 1784105075941,
+  "backendConfigMap": {
+    "USER_AGREEMENT_TOGGLE_LIST": "-1",
+    "ACTIVITY_SMALL_SCENE_SWITCH": "1|9|10",
+    "CHANNEL_ACTIVITY_SHOW_SIGN_ITEM": "115060,0,0,1;710005,0,0,1;214194,0,0,1",
+    "VERSION_THEME": "0",
+    "ACTIVITY_SCENE_SWITCH": "12",
+    "FESTIVAL_SCENE_SWITCH": "4",
+    "CHANNEL_ACTIVITY_ITEM_SHOW_TIME": "2025-01-15 00:00:00|2055-01-15 00:00:00",
+    "VERSION_THEME_ROLE": "1"
+  },
+  "audit": false
+}

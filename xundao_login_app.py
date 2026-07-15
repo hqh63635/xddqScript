@@ -443,7 +443,7 @@ class LoginApp(tk.Tk):
         action_box = ttk.Combobox(form, textvariable=action_var, values=("遇到装备停止", "自动分解"), state="readonly", width=14, style="Form.TCombobox")
         action_box.grid(row=0, column=4, sticky="w", pady=7)
         tk.Label(form, text="保留品质", bg="#fbfdfc", fg="#4e5e63").grid(row=1, column=3, sticky="e", padx=(8, 10), pady=7)
-        ttk.Spinbox(form, from_=1, to=20, textvariable=quality_var, width=11, style="Form.TSpinbox").grid(row=1, column=4, sticky="w", pady=7)
+        ttk.Spinbox(form, from_=1, to=45, textvariable=quality_var, width=11, style="Form.TSpinbox").grid(row=1, column=4, sticky="w", pady=7)
 
         status_card = tk.Frame(workspace, bg="#fbfdfc", highlightbackground="#dce6e2", highlightthickness=1)
         status_card.pack(fill="x", padx=16, pady=(0, 12))
@@ -629,7 +629,7 @@ class LoginApp(tk.Tk):
             row=3, column=0, columnspan=2, sticky="w", pady=(0, 8)
         )
         ttk.Label(body, text="保留品质（含）").grid(row=4, column=0, sticky="w", pady=7)
-        ttk.Spinbox(body, from_=1, to=20, textvariable=quality_var, width=12).grid(row=4, column=1, sticky="w")
+        ttk.Spinbox(body, from_=1, to=45, textvariable=quality_var, width=12).grid(row=4, column=1, sticky="w")
 
         def save() -> None:
             try:

@@ -1,0 +1,31 @@
+{
+  "data": {
+    "appId": "2021004127623300",
+    "appName": "寻道大千",
+    "desc": "《寻道大千》是一款国风修仙养成手游。\n前世，身为掌握道则的修仙大能，误入远古秘境，仅剩一缕残魂。\n今世，阴差阳错之下你以小妖的身体重新修炼。你行走在一方世界中，腾云驾雾，身怀无数法宝，结交仙友，收服灵兽，培养精怪，加入妖盟……终有一日，你会踏上仙途，去往广阔的大千世界，寻悟仙道。",
+    "appIcon": "https://appstoreisvpic.alipayobjects.com/prod/aa3bbf4a-9e13-47e5-830e-03ed7c804b59.png",
+    "appVersion": "3.900.493",
+    "landScape": "NO",
+    "appType": "其他",
+    "score": 4.7,
+    "operateDesc": null,
+    "merchantInfo": {
+      "cpName": "安徽尚趣玩网络科技有限公司",
+      "cpDesc": null,
+      "serviceTitle": "客服信息",
+      "serviceDesc": "客服电话:0553-8369608",
+      "serviceUrlName": "在线客服",
+      "serviceUrl": null
+    },
+    "iap": true,
+    "pkgUrl": {
+      "appId": "2021004127623300",
+      "pkgUrl": "https://mdn.alipayobjects.com/gamecenteruprod_pkg/afts/file/JHwjQpgWGIIAAAAAgJAAAAgAegz7AQBr",
+      "subPkgUrls": null
+    }
+  },
+  "success": true,
+  "retryable": false,
+  "errorCode": null,
+  "errorMsg": null
+}

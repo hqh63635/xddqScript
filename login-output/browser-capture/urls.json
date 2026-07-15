@@ -1,0 +1,12 @@
+[
+  {
+    "url": "https://login-xddq-cn-40.kvps85.com/server/list",
+    "status": 200,
+    "type": "xhr"
+  },
+  {
+    "url": "https://proxy-xddq-40.kvps85.com/s4000867_http/player/login",
+    "status": 200,
+    "type": "xhr"
+  }
+]
