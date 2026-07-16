@@ -167,6 +167,7 @@ TOWER_SELECT_BUFF = 20764
 TOWER_SELECT_BUFF_RESPONSE = 764
 TOWER_SAVE_PREFERENCE = 20767
 TOWER_SAVE_PREFERENCE_RESPONSE = 767
+TOWER_QUICK_NOT_AVAILABLE = 30224
 TOWER_DEFAULT_PREFERENCES = (1017, 1018, 1023, 1024, 1022)
 STAGE_SYNC = 403
 STAGE_CHALLENGE = 20402
@@ -271,6 +272,10 @@ def protobuf_string(field: int, value: str) -> bytes:
 
 def protobuf_int(field: int, value: int) -> bytes:
     return encode_varint(field << 3) + encode_varint(value)
+
+
+def protobuf_message(field: int, value: bytes) -> bytes:
+    return encode_varint(field << 3 | 2) + encode_varint(len(value)) + value
 
 
 def protobuf_packed_ints(field: int, values: list[int]) -> bytes:
@@ -823,8 +828,8 @@ def parse_universe_state(payload: bytes) -> dict[str, int]:
     }
 
 
-def parse_tower_state(payload: bytes) -> dict[str, Any]:
-    fields = parse_protobuf(payload)
+def parse_tower_state(payload: bytes | list[dict[str, Any]]) -> dict[str, Any]:
+    fields = parse_protobuf(payload) if isinstance(payload, bytes) else payload
     pending = _children(fields, 4)
     return {
         "curPassId": int((_values(fields, 1) or [0])[0]),
@@ -1498,7 +1503,7 @@ class GameSession:
 
     def tower_save_preferences(self, skill_types: tuple[int, ...] = TOWER_DEFAULT_PREFERENCES) -> dict[str, Any]:
         payload = b"".join(
-            message_field(1, protobuf_int(1, priority) + protobuf_int(2, skill_type))
+            protobuf_message(1, protobuf_int(1, priority) + protobuf_int(2, skill_type))
             for priority, skill_type in enumerate(skill_types, 1)
         )
         response = self._request(
@@ -1544,6 +1549,8 @@ class GameSession:
         fields = parse_protobuf(response)
         return {
             "ret": response_ret(response),
+            # StageChallengeResp: ret=1, allBattleRecord=2,
+            # challengeSuccess=3, rewards=4.
             "won": bool(int((_values(fields, 3) or [0])[0])),
             "payloadHex": response.hex(),
         }
@@ -2829,13 +2836,16 @@ def run_tower_tasks(
             log("镇妖塔加成偏好已激活。")
 
         quick = session.tower_quick_challenge()
-        if quick["ret"] != 0:
+        if quick["ret"] not in (0, TOWER_QUICK_NOT_AVAILABLE):
             return {"ret": quick["ret"], "completed": 0, "remaining": count, "reason": "tower_quick_challenge_failed"}
-        state = quick["state"] or state
-        if state:
-            log(f"镇妖塔快速挑战完成，当前关卡 {state['curPassId']}，最高关卡 {state['passMaxId']}。")
+        if quick["ret"] == TOWER_QUICK_NOT_AVAILABLE:
+            log("镇妖塔当前没有可快速挑战的层数，继续普通挑战。")
         else:
-            log("镇妖塔快速挑战完成。")
+            state = quick["state"] or state
+            if state:
+                log(f"镇妖塔快速挑战完成，当前关卡 {state['curPassId']}，最高关卡 {state['passMaxId']}。")
+            else:
+                log("镇妖塔快速挑战完成。")
 
         state, select_ret = select_pending(state)
         if select_ret != 0:
@@ -2901,7 +2911,7 @@ def run_adventure_tasks(
                     "reason": "adventure_challenge_failed",
                 }
             if not result["won"]:
-                log("冒险挑战失败，任务停止。")
+                log("冒险当前关卡未通过，已停止继续挑战。")
                 return {
                     "ret": 0, "completed": completed,
                     "remaining": 0 if count == 0 else count - completed,
@@ -3517,18 +3527,23 @@ def run_chop_tasks(
     keep_attribute_value: str = "0",
     snapshot: Callable[[dict[str, Any]], None] | None = None,
     auto_rank_battle: bool = False,
+    divine_mind_interval_minutes: float | None = None,
 ) -> dict[str, Any]:
     """Run sequential chops, resolving only verified tree-drop equipment."""
     login = _load_login(server_id, output_dir)
     completed = 0
     if stop_event is not None and stop_event.is_set():
         return {"ret": 0, "completed": completed, "reason": "stopped"}
+    if divine_mind_interval_minutes is not None and not 1 <= divine_mind_interval_minutes <= 1440:
+        raise ValueError("Invalid divine mind collection interval")
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
         initial_snapshot = session.resource_snapshot(server_id)
         jade = int(initial_snapshot.get("jade", 0))
         spirit_stone = int(initial_snapshot.get("spiritStone", 0))
         rank_tickets = min(RANK_BATTLE_TICKET_MAX, session.item_count(RANK_BATTLE_TICKET))
         missing_ticket_logged = False
+        divine_mind_total = 0
+        next_divine_mind_at = 0.0
 
         def emit_snapshot() -> None:
             nonlocal jade, spirit_stone
@@ -3544,11 +3559,38 @@ def run_chop_tasks(
             value["rankBattleTicket"] = rank_tickets
             snapshot(value)
 
+        def collect_divine_mind_if_due(force: bool = False) -> dict[str, Any] | None:
+            nonlocal divine_mind_total, next_divine_mind_at
+            if divine_mind_interval_minutes is None:
+                return None
+            now = time.monotonic()
+            if not force and now < next_divine_mind_at:
+                return None
+            result = session.divine_insight_receive_mind()
+            if result["ret"] != 0:
+                return result
+            received = result["receiveNum"] + result["inspireAddNum"]
+            divine_mind_total += received
+            next_divine_mind_at = now + divine_mind_interval_minutes * 60
+            log(f"神躯气海丹田收集完成，本次获得 {received} 真元，累计获得 {divine_mind_total} 真元。")
+            if snapshot is not None:
+                value = session.resource_snapshot(server_id)
+                value["divineMindLastCollected"] = received
+                value["divineMindTotalCollected"] = divine_mind_total
+                snapshot(value)
+            return result
+
         emit_snapshot()
+        mind_result = collect_divine_mind_if_due(force=True)
+        if mind_result is not None and mind_result["ret"] != 0:
+            return {"ret": mind_result["ret"], "completed": completed, "reason": "divine_mind_collection_failed"}
         pending = session.get_pending_equipment()
         while count is None or completed < count:
             if stop_event is not None and stop_event.is_set():
                 return {"ret": 0, "completed": completed, "reason": "stopped"}
+            mind_result = collect_divine_mind_if_due()
+            if mind_result is not None and mind_result["ret"] != 0:
+                return {"ret": mind_result["ret"], "completed": completed, "reason": "divine_mind_collection_failed"}
             equipment = pending
             if not equipment:
                 # Python owns the repeated-task loop. Each request must remain

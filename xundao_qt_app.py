@@ -1400,24 +1400,6 @@ class XundaoWindow(FramelessWindow):
             self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count_text}。")
         def worker() -> None:
             try:
-                collection_thread = None
-                if run_divine_mind:
-                    def collect_divine_mind() -> None:
-                        try:
-                            result = run_divine_mind_collection_tasks(
-                                int(role["serverId"]), OUTPUT_DIR, 1,
-                                lambda msg: self._emit_event("chop_log", msg),
-                                self.chop_stop_event,
-                                snapshot=lambda value: self._emit_event("profile_snapshot", value),
-                                interval_minutes=divine_mind_interval,
-                            )
-                            result["taskName"] = "神躯 - 气海丹田"
-                            self._emit_event("limited_task_result", result)
-                        except Exception as exc:
-                            self._emit_event("chop_log", f"气海丹田收集失败：{type(exc).__name__}: {exc}")
-
-                    collection_thread = threading.Thread(target=collect_divine_mind, daemon=True)
-                    collection_thread.start()
                 auxiliary_tasks = [
                     (run_wild_boss, run_wild_boss_tasks, wild_boss_count, "挑战妖王"),
                     (run_invade, run_invade_tasks, invade_count, "异兽入侵"),
@@ -1543,8 +1525,16 @@ class XundaoWindow(FramelessWindow):
                     task_results.append(result)
                     self._emit_event("limited_task_result", result)
                 if not run_chop:
-                    if collection_thread is not None:
-                        collection_thread.join()
+                    if run_divine_mind:
+                        result = run_divine_mind_collection_tasks(
+                            int(role["serverId"]), OUTPUT_DIR, 1,
+                            lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
+                            snapshot=lambda value: self._emit_event("profile_snapshot", value),
+                            interval_minutes=divine_mind_interval,
+                        )
+                        result["taskName"] = "神躯 - 气海丹田"
+                        task_results.append(result)
+                        self._emit_event("limited_task_result", result)
                     self._emit_event("auxiliary_tasks_done", task_results)
                     return
                 result = run_chop_tasks(
@@ -1553,6 +1543,7 @@ class XundaoWindow(FramelessWindow):
                     keep_attribute_type=attribute_type,
                     snapshot=lambda value: self._emit_event("profile_snapshot", value),
                     auto_rank_battle=auto_rank_battle,
+                    divine_mind_interval_minutes=(divine_mind_interval if run_divine_mind else None),
                 )
                 try:
                     self._emit_event(
@@ -1561,8 +1552,6 @@ class XundaoWindow(FramelessWindow):
                     )
                 except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
                     self._emit_event("profile_error", f"最终资源刷新失败：{type(exc).__name__}: {exc}")
-                if collection_thread is not None:
-                    collection_thread.join()
                 self._emit_event("chop_success", result)
             except Exception as exc:
                 self.chop_stop_event.set()

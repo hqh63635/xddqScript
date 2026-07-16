@@ -1313,6 +1313,24 @@ class UniverseTaskTests(unittest.TestCase):
 
 
 class TowerTaskTests(unittest.TestCase):
+    def test_save_preferences_encodes_nested_messages(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+
+        def request(message_id, response_id, payload=b""):
+            captured.append((message_id, response_id, payload))
+            return game.protobuf_int(1, 0)
+
+        session._request = request  # type: ignore[method-assign]
+        result = session.tower_save_preferences((1017, 1018))
+
+        expected = (
+            game.protobuf_message(1, game.protobuf_int(1, 1) + game.protobuf_int(2, 1017))
+            + game.protobuf_message(1, game.protobuf_int(1, 2) + game.protobuf_int(2, 1018))
+        )
+        self.assertEqual(result["ret"], 0)
+        self.assertEqual(captured, [(game.TOWER_SAVE_PREFERENCE, game.TOWER_SAVE_PREFERENCE_RESPONSE, expected)])
+
     def test_parse_tower_state_and_snapshot(self) -> None:
         pending = game.protobuf_int(1, 101017) + game.protobuf_int(1, 101018)
         payload = (
@@ -1331,6 +1349,17 @@ class TowerTaskTests(unittest.TestCase):
         snapshot = game._snapshot_from_frames(42, [(game.TOWER_SYNC, payload)])
         self.assertEqual(snapshot["towerCurrentPass"], 23)
         self.assertEqual(snapshot["towerMaxPass"], 58)
+
+    def test_parse_embedded_tower_response_state(self) -> None:
+        state = game.protobuf_int(1, 24) + game.protobuf_int(3, 58) + game.protobuf_int(5, 0)
+        response = game.protobuf_int(1, 0) + message_field(5, state)
+
+        self.assertEqual(game.parse_tower_response_state(response, 5), {
+            "curPassId": 24,
+            "passMaxId": 58,
+            "pendingBuffIds": [],
+            "leftPendingTimes": 0,
+        })
 
     def test_quick_selects_all_buffs_then_continues_challenge(self) -> None:
         calls = []
@@ -1397,8 +1426,44 @@ class TowerTaskTests(unittest.TestCase):
         self.assertEqual(result["completed"], 2)
         self.assertEqual(result["reason"], "finished")
 
+    def test_quick_not_available_continues_normal_challenge(self) -> None:
+        calls = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def tower_state(self): return {"curPassId": 10, "passMaxId": 10, "pendingBuffIds": [], "leftPendingTimes": 0}
+            def tower_save_preferences(self): return {"ret": 0}
+            def tower_quick_challenge(self): return {"ret": game.TOWER_QUICK_NOT_AVAILABLE, "state": None}
+            def tower_challenge(self):
+                calls.append("challenge")
+                return {"ret": 0, "won": True, "state": None}
+            def resource_snapshot(self, server_id): return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_tower_tasks(42, output_dir, 1, lambda _message: None)
+
+        self.assertEqual(calls, ["challenge"])
+        self.assertEqual(result["reason"], "finished")
+
 
 class AdventureTaskTests(unittest.TestCase):
+    def test_challenge_success_is_response_field_three(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        session._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
+            game.protobuf_int(1, 0) + game.protobuf_int(3, 1)
+        )
+
+        result = session.stage_challenge()
+
+        self.assertEqual(result["ret"], 0)
+        self.assertTrue(result["won"])
+
     def test_parse_stage_state_and_snapshot(self) -> None:
         payload = game.protobuf_int(1, 17)
 
@@ -1773,7 +1838,7 @@ class GameSessionHeartbeatTests(unittest.TestCase):
         session.socket = FakeSocket()  # type: ignore[assignment]
         with patch.object(game, "HEARTBEAT_INTERVAL_SECONDS", 0.01):
             session._start_heartbeat()
-            time.sleep(0.035)
+            time.sleep(0.06)
             session.close()
 
         self.assertGreaterEqual(sent.count(game.PLAYER_PING), 2)
@@ -1786,6 +1851,42 @@ class GameSessionHeartbeatTests(unittest.TestCase):
         snapshot = session.resource_snapshot(42)
 
         self.assertEqual(snapshot["serverId"], 42)
+
+
+class ChopDivineMindIntegrationTests(unittest.TestCase):
+    def test_chop_and_divine_mind_share_one_session(self) -> None:
+        instances = 0
+        calls = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs):
+                nonlocal instances
+                instances += 1
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def resource_snapshot(self, server_id): return {"serverId": server_id, "jade": 0, "spiritStone": 0}
+            def item_count(self, _item_id): return 0
+            def get_pending_equipment(self): return []
+            def divine_insight_receive_mind(self):
+                calls.append("mind")
+                return {"ret": 0, "receiveNum": 10, "inspireAddNum": 2}
+            def chop_tree(self, auto=False):
+                calls.append("chop")
+                return {"ret": 0, "equipment": [], "rewards": []}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_chop_tasks(
+                    42, output_dir, 1, 0, "decompose", 5, lambda _message: None,
+                    divine_mind_interval_minutes=60,
+                )
+
+        self.assertEqual(instances, 1)
+        self.assertEqual(calls, ["mind", "chop"])
+        self.assertEqual(result["reason"], "finished")
 
 
 if __name__ == "__main__":
