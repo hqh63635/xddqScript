@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import io
+import base64
+import faulthandler
 import json
 import sys
 import threading
@@ -108,15 +110,30 @@ from xundao_game_client import fetch_game_data
 from xundao_game_session import (
     ATTRIBUTE_NAMES,
     DESTINY_TRAVEL_COUNT_MAX,
+    HOMELAND_RESOURCE_NAMES,
     PROFESSION_CHALLENGE_DAILY_MAX,
     fetch_role_snapshot,
     run_chop_tasks,
+    run_adventure_tasks,
     run_destiny_travel_tasks,
+    run_divine_mind_collection_tasks,
     run_hero_rank_tasks,
+    run_homeland_tasks,
     run_invade_tasks,
+    run_law_looks_draw_tasks,
+    run_magic_draw_tasks,
+    run_magic_treasure_tasks,
+    run_pet_kernel_draw_tasks,
     run_profession_challenge_tasks,
     run_profession_quick_task,
+    run_pupil_training_tasks,
     run_star_trial_tasks,
+    run_spirit_draw_tasks,
+    run_talent_tasks,
+    run_treasure_auction_tasks,
+    run_tower_tasks,
+    run_universe_skill_draw_tasks,
+    run_universe_wheel_draw_tasks,
     run_wild_boss_tasks,
     run_yard_daily_tasks,
     run_yard_draw_tasks,
@@ -141,6 +158,7 @@ def app_dir() -> Path:
 
 CONFIG_PATH = app_dir() / "config.json"
 OUTPUT_DIR = app_dir() / "login-output"
+_FAULT_LOG: io.TextIOWrapper | None = None
 
 
 def read_config() -> dict[str, str]:
@@ -157,6 +175,17 @@ def read_config() -> dict[str, str]:
         "autoProfessionQuick": "false", "autoProfessionChallenge": "false",
         "professionChallengeCount": "30",
         "autoYardDaily": "false", "autoYardDraw": "false", "yardDrawCount": "1",
+        "autoHomeland": "false", "homelandPreferredItem": "100004", "homelandPreferredLevel": "3",
+        "autoTalent": "false", "talentDrawCount": "3", "talentTotalCount": "unlimited",
+        "talentDrawInterval": "2.0",
+        "talentMinimumQuality": "5", "talentPreferredAttribute": "5",
+        "autoMagicDraw": "false", "magicDrawCount": "2", "magicPaidDrawCount": "0",
+        "autoSpiritDraw": "false", "spiritDrawCount": "2", "spiritPaidDrawCount": "0",
+        "autoMagicTreasure": "false",
+        "magicTreasure1FreeCount": "2", "magicTreasure1PaidCount": "0",
+        "magicTreasure2FreeCount": "2", "magicTreasure2PaidCount": "0",
+        "magicTreasure3FreeCount": "2", "magicTreasure3PaidCount": "0",
+        "autoPupilTraining": "false", "pupilTrainingRounds": "100",
     }
     if not CONFIG_PATH.exists():
         return defaults
@@ -261,7 +290,7 @@ class SettingsDialog(QDialog):
 
 
 class XundaoWindow(FramelessWindow):
-    event = Signal(str, object)
+    event = Signal(str, str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -294,6 +323,15 @@ class XundaoWindow(FramelessWindow):
         self.app_title_bar.raise_()
         self.restore_session()
 
+    def _emit_event(self, event: str, value: object) -> None:
+        if isinstance(value, bytes):
+            value = {"__bytes__": base64.b64encode(value).decode("ascii")}
+        elif event == "dashboard":
+            path, roles = value
+            value = {"path": str(path), "roles": roles}
+        payload = json.dumps(value, ensure_ascii=False)
+        self.event.emit(event, payload)
+
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
         self.app_title_bar.raise_()
@@ -316,10 +354,18 @@ class XundaoWindow(FramelessWindow):
             #resourceBlue { background: #edf7fc; color: #3094cf; border-radius: 23px; font-weight: 700; }
             #resourceOrange { background: #fff5e9; color: #e99a32; border-radius: 23px; font-weight: 700; }
             #sectionTitle { font-size: 15px; font-weight: 600; }
+            #taskGroupTitle { color: #52636a; font-size: 12px; font-weight: 600; padding-bottom: 3px; }
             #roleName { font-size: 22px; font-weight: 700; color: #17272c; }
             #muted { color: #859398; }
             #statusGood { color: #25a66f; font-weight: 600; }
             QPlainTextEdit { background: #fbfcfc; border: 1px solid #edf1ef; border-radius: 5px; padding: 10px; }
+            #settingsScroll { background: transparent; border: 0; }
+            #settingsScroll > QWidget > QWidget { background: transparent; }
+            #settingsScroll QScrollBar:vertical { background: #edf2f0; width: 8px; margin: 0; border-radius: 4px; }
+            #settingsScroll QScrollBar::handle:vertical { background: #aab8b3; min-height: 36px; border-radius: 4px; }
+            #settingsScroll QScrollBar::handle:vertical:hover { background: #859690; }
+            #settingsScroll QScrollBar::add-line:vertical, #settingsScroll QScrollBar::sub-line:vertical { height: 0; }
+            #settingsScroll QScrollBar::add-page:vertical, #settingsScroll QScrollBar::sub-page:vertical { background: transparent; }
         """)
 
     def _build_login_page(self) -> QWidget:
@@ -358,7 +404,6 @@ class XundaoWindow(FramelessWindow):
         content = QVBoxLayout(); set_margins(content, 18, 14, 18, 14); content.setSpacing(14)
         content.addWidget(self._profile_card())
         main = QHBoxLayout(); main.setSpacing(14)
-        main.addWidget(self._navigation(), 0)
         main.addWidget(self._settings_panel(config), 3)
         main.addWidget(self._log_panel(), 2)
         content.addLayout(main, 1)
@@ -430,12 +475,28 @@ class XundaoWindow(FramelessWindow):
     def _settings_panel(self, config: dict[str, str]) -> QFrame:
         panel = Card(); layout = QVBoxLayout(panel); set_margins(layout, 16, 14, 16, 16); layout.setSpacing(12)
         head = QHBoxLayout(); title = QLabel("⚙  功能设置"); title.setObjectName("sectionTitle")
+        self.select_all_tasks = CheckBox("全选")
+        self.select_all_tasks.clicked.connect(self._set_all_tasks)
         advanced = PushButton(FIF.SETTING, "高级设置"); advanced.clicked.connect(self.open_settings)
-        head.addWidget(title); head.addStretch(); head.addWidget(advanced); layout.addLayout(head)
+        head.addWidget(title); head.addStretch(); head.addWidget(self.select_all_tasks); head.addSpacing(10)
+        head.addWidget(advanced); layout.addLayout(head)
+
+        scroll = QScrollArea(); scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll_content = QWidget()
+        content_layout = QVBoxLayout(scroll_content)
+        set_margins(content_layout, 0, 0, 8, 0); content_layout.setSpacing(12)
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, 1)
+
         task = Card(object_name="softCard"); task_layout = QVBoxLayout(task); set_margins(task_layout, 16, 14, 16, 16)
         title_row = QHBoxLayout(); self.chop_enabled = CheckBox("自动砍树"); self.chop_enabled.setChecked(True)
         desc = QLabel("自动执行砍树任务并处理掉落装备"); desc.setObjectName("muted")
-        title_row.addWidget(self.chop_enabled); title_row.addWidget(desc); title_row.addStretch(); task_layout.addLayout(title_row)
+        self.peach_count_label = QLabel("仙桃：--"); self.peach_count_label.setObjectName("muted")
+        title_row.addWidget(self.chop_enabled); title_row.addWidget(desc); title_row.addStretch()
+        title_row.addWidget(self.peach_count_label); task_layout.addLayout(title_row)
         form = QGridLayout(); form.setHorizontalSpacing(14); form.setVerticalSpacing(12)
         self.count_values: list[int | None] = [None, 1, 5, 10, 20, 50, 100, 500, 1000]
         self.count_input = ComboBox(); self.count_input.addItems(["无限次", "1 次", "5 次", "10 次", "20 次", "50 次", "100 次", "500 次", "1000 次"])
@@ -467,7 +528,24 @@ class XundaoWindow(FramelessWindow):
         form.addWidget(QLabel("保留属性"), 2, 0); form.addWidget(self.attribute_input, 2, 1)
         attribute_rule = QLabel("高于当前同部位装备时自动替换"); attribute_rule.setObjectName("muted")
         form.addWidget(attribute_rule, 2, 2, 1, 2)
-        task_layout.addLayout(form); layout.addWidget(task)
+        task_layout.addLayout(form); content_layout.addWidget(task)
+        pupil_task = Card(object_name="softCard")
+        pupil_layout = QHBoxLayout(pupil_task); set_margins(pupil_layout, 16, 12, 16, 12)
+        self.pupil_training_enabled = CheckBox("宗门 - 弟子修炼")
+        self.pupil_training_enabled.setChecked(config.get("autoPupilTraining", "false").lower() == "true")
+        self.pupil_training_rounds = SpinBox()
+        self.pupil_training_rounds.setRange(1, 100)
+        self.pupil_training_rounds.setValue(int(config.get("pupilTrainingRounds", "100")))
+        pupil_hint = QLabel("仅使用现有次数，不购买次数、不自动出师")
+        pupil_hint.setObjectName("muted")
+        pupil_layout.addWidget(self.pupil_training_enabled)
+        pupil_layout.addSpacing(12)
+        pupil_layout.addWidget(QLabel("最多轮数"))
+        pupil_layout.addWidget(self.pupil_training_rounds)
+        pupil_layout.addSpacing(12)
+        pupil_layout.addWidget(pupil_hint)
+        pupil_layout.addStretch()
+        content_layout.addWidget(pupil_task)
         rank_task = Card(object_name="softCard"); rank_layout = QHBoxLayout(rank_task); set_margins(rank_layout, 16, 14, 16, 14)
         self.rank_enabled = CheckBox("自动斗法")
         self.rank_enabled.setChecked(config.get("autoRankBattle", "false").lower() == "true")
@@ -475,7 +553,7 @@ class XundaoWindow(FramelessWindow):
         rank_info = ToolButton(); rank_info.setIcon(FIF.INFO.icon(color=QColor("#7d8b90"))); rank_info.setFixedSize(28, 28)
         rank_info.setToolTip("有挑战状时自动挑战妖力最低的可用对手；没有挑战状时继续等待砍树掉落。")
         rank_layout.addWidget(self.rank_enabled); rank_layout.addWidget(self.rank_ticket_label); rank_layout.addWidget(rank_info); rank_layout.addStretch()
-        layout.addWidget(rank_task)
+        content_layout.addWidget(rank_task)
         wild_boss_task = Card(object_name="softCard")
         wild_boss_layout = QHBoxLayout(wild_boss_task); set_margins(wild_boss_layout, 16, 12, 16, 12)
         self.wild_boss_enabled = CheckBox("挑战妖王")
@@ -497,54 +575,481 @@ class XundaoWindow(FramelessWindow):
         wild_boss_layout.addSpacing(12)
         wild_boss_layout.addWidget(self.wild_boss_remaining_label)
         wild_boss_layout.addStretch()
-        layout.addWidget(wild_boss_task)
+        content_layout.addWidget(wild_boss_task)
         limited_task = Card(object_name="softCard")
         limited_layout = QGridLayout(limited_task); set_margins(limited_layout, 16, 12, 16, 12)
         limited_layout.setHorizontalSpacing(12); limited_layout.setVerticalSpacing(8)
+        limited_title = QLabel("日常挑战"); limited_title.setObjectName("taskGroupTitle")
+        limited_layout.addWidget(limited_title, 0, 0, 1, 4)
         self.invade_enabled, self.invade_count, self.invade_remaining_label = self._add_limited_task_row(
-            limited_layout, 0, "异兽入侵", 5, config.get("autoInvade", "false"), config.get("invadeCount", "5"),
+            limited_layout, 1, "异兽入侵", 5, config.get("autoInvade", "false"), config.get("invadeCount", "5"),
             "今日剩余 --/5 次",
         )
         self.star_trial_enabled, self.star_trial_count, self.star_trial_remaining_label = self._add_limited_task_row(
-            limited_layout, 1, "星宿试炼", 30, config.get("autoStarTrial", "false"), config.get("starTrialCount", "30"),
+            limited_layout, 2, "星宿试炼", 30, config.get("autoStarTrial", "false"), config.get("starTrialCount", "30"),
             "今日剩余 --/30 次",
         )
         self.hero_rank_enabled, self.hero_rank_count, self.hero_rank_remaining_label = self._add_limited_task_row(
-            limited_layout, 2, "群英榜", 10, config.get("autoHeroRank", "false"), config.get("heroRankCount", "10"),
+            limited_layout, 3, "群英榜", 10, config.get("autoHeroRank", "false"), config.get("heroRankCount", "10"),
             "当前体力 --/10",
         )
         self.destiny_travel_enabled, self.destiny_travel_count, self.destiny_travel_remaining_label = self._add_limited_task_row(
-            limited_layout, 3, "仙友游历", DESTINY_TRAVEL_COUNT_MAX,
+            limited_layout, 4, "仙友游历", DESTINY_TRAVEL_COUNT_MAX,
             config.get("autoDestinyTravel", "false"), config.get("destinyTravelCount", "10"),
             "当前体力 --",
         )
+        content_layout.addWidget(limited_task)
+
+        profession_task = Card(object_name="softCard")
+        profession_layout = QGridLayout(profession_task); set_margins(profession_layout, 16, 12, 16, 12)
+        profession_layout.setHorizontalSpacing(12); profession_layout.setVerticalSpacing(8)
+        profession_title = QLabel("道途试炼"); profession_title.setObjectName("taskGroupTitle")
+        profession_layout.addWidget(profession_title, 0, 0, 1, 4)
         self.profession_quick_enabled = CheckBox("道途试炼速战")
         self.profession_quick_enabled.setChecked(config.get("autoProfessionQuick", "false").lower() == "true")
         self.profession_quick_remaining_label = QLabel("今日剩余 --/1 次")
         self.profession_quick_remaining_label.setObjectName("muted")
-        limited_layout.addWidget(self.profession_quick_enabled, 4, 0)
-        limited_layout.addWidget(QLabel("速战上一关"), 4, 1)
-        limited_layout.addWidget(QLabel("每日 1 次"), 4, 2)
-        limited_layout.addWidget(self.profession_quick_remaining_label, 4, 3)
+        profession_layout.addWidget(self.profession_quick_enabled, 1, 0)
+        profession_layout.addWidget(QLabel("速战上一关"), 1, 1)
+        profession_layout.addWidget(QLabel("每日 1 次"), 1, 2)
+        profession_layout.addWidget(self.profession_quick_remaining_label, 1, 3)
         self.profession_challenge_enabled, self.profession_challenge_count, self.profession_challenge_remaining_label = self._add_limited_task_row(
-            limited_layout, 5, "道途试炼挑战", PROFESSION_CHALLENGE_DAILY_MAX,
+            profession_layout, 2, "道途试炼挑战", PROFESSION_CHALLENGE_DAILY_MAX,
             config.get("autoProfessionChallenge", "false"), config.get("professionChallengeCount", "30"),
             "今日剩余 --/30 次",
         )
+        content_layout.addWidget(profession_task)
+
+        yard_task = Card(object_name="softCard")
+        yard_layout = QGridLayout(yard_task); set_margins(yard_layout, 16, 12, 16, 12)
+        yard_layout.setHorizontalSpacing(12); yard_layout.setVerticalSpacing(8)
+        yard_title = QLabel("仙居"); yard_title.setObjectName("taskGroupTitle")
+        yard_layout.addWidget(yard_title, 0, 0, 1, 4)
         self.yard_daily_enabled = CheckBox("仙居日常")
         self.yard_daily_enabled.setChecked(config.get("autoYardDaily", "false").lower() == "true")
         yard_daily_desc = QLabel("收桃、收菜、炼丹、化外灵池")
         yard_daily_desc.setObjectName("muted")
-        limited_layout.addWidget(self.yard_daily_enabled, 6, 0)
-        limited_layout.addWidget(yard_daily_desc, 6, 1, 1, 3)
+        yard_layout.addWidget(self.yard_daily_enabled, 1, 0)
+        yard_layout.addWidget(yard_daily_desc, 1, 1, 1, 3)
         self.yard_draw_enabled, self.yard_draw_count, self.yard_draw_remaining_label = self._add_limited_task_row(
-            limited_layout, 7, "仙居造物", 100,
+            yard_layout, 2, "仙居造物", 100,
             config.get("autoYardDraw", "false"), config.get("yardDrawCount", "1"),
-            "消耗天工图纸",
+            "优先使用普通免费及 2 次广告免费",
         )
-        layout.addWidget(limited_task)
-        layout.addStretch()
+        content_layout.addWidget(yard_task)
+
+        homeland_task = Card(object_name="softCard")
+        homeland_layout = QGridLayout(homeland_task); set_margins(homeland_layout, 16, 12, 16, 12)
+        homeland_layout.setHorizontalSpacing(12); homeland_layout.setVerticalSpacing(8)
+        homeland_title = QLabel("福地"); homeland_title.setObjectName("taskGroupTitle")
+        homeland_layout.addWidget(homeland_title, 0, 0, 1, 6)
+        self.homeland_enabled = CheckBox("鼠宝采集")
+        self.homeland_enabled.setChecked(config.get("autoHomeland", "false").lower() == "true")
+        self.homeland_resource_ids = list(HOMELAND_RESOURCE_NAMES)
+        self.homeland_resource = ComboBox()
+        self.homeland_resource.addItems([
+            HOMELAND_RESOURCE_NAMES[item_id] for item_id in self.homeland_resource_ids
+        ])
+        try:
+            saved_item_id = int(config.get("homelandPreferredItem", "100004"))
+            resource_index = self.homeland_resource_ids.index(saved_item_id)
+        except (TypeError, ValueError):
+            resource_index = 0
+        self.homeland_resource.setCurrentIndex(resource_index)
+        self.homeland_level = ComboBox()
+        self.homeland_level.addItems([f"{level} 级" for level in range(1, 6)])
+        try:
+            saved_level = int(config.get("homelandPreferredLevel", "3"))
+        except (TypeError, ValueError):
+            saved_level = 3
+        self.homeland_level.setCurrentIndex(max(1, min(5, saved_level)) - 1)
+        homeland_hint = QLabel("先领取已完成采集，再派出全部空闲鼠宝；探寻刷新遵守冷却")
+        homeland_hint.setObjectName("muted")
+        homeland_layout.addWidget(self.homeland_enabled, 1, 0)
+        homeland_layout.addWidget(QLabel("优先资源"), 1, 1)
+        homeland_layout.addWidget(self.homeland_resource, 1, 2)
+        homeland_layout.addWidget(QLabel("优先等级"), 1, 3)
+        homeland_layout.addWidget(self.homeland_level, 1, 4)
+        homeland_layout.addWidget(homeland_hint, 2, 0, 1, 6)
+        homeland_layout.setColumnStretch(5, 1)
+        content_layout.addWidget(homeland_task)
+
+        talent_task = Card(object_name="softCard")
+        talent_layout = QGridLayout(talent_task); set_margins(talent_layout, 16, 12, 16, 12)
+        talent_layout.setHorizontalSpacing(12); talent_layout.setVerticalSpacing(8)
+        talent_title = QLabel("灵脉"); talent_title.setObjectName("taskGroupTitle")
+        talent_layout.addWidget(talent_title, 0, 0, 1, 6)
+        self.talent_enabled = CheckBox("激发灵脉")
+        self.talent_enabled.setChecked(config.get("autoTalent", "false").lower() == "true")
+        self.talent_draw_count = SpinBox(); self.talent_draw_count.setRange(1, 5)
+        try:
+            saved_talent_count = int(config.get("talentDrawCount", "3"))
+        except (TypeError, ValueError):
+            saved_talent_count = 3
+        self.talent_draw_count.setValue(max(1, min(5, saved_talent_count)))
+        self.talent_total_count = ComboBox()
+        self.talent_total_count.addItems(["无限次"] + [f"{value} 次" for value in range(1, 1001)])
+        saved_talent_total = config.get("talentTotalCount", "unlimited")
+        try:
+            talent_total_index = 0 if saved_talent_total == "unlimited" else int(saved_talent_total)
+        except (TypeError, ValueError):
+            talent_total_index = 0
+        self.talent_total_count.setCurrentIndex(max(0, min(1000, talent_total_index)))
+        self.talent_draw_interval = DoubleSpinBox()
+        self.talent_draw_interval.setRange(0.5, 60.0)
+        self.talent_draw_interval.setSingleStep(0.5)
+        try:
+            saved_talent_interval = float(config.get("talentDrawInterval", "2.0"))
+        except (TypeError, ValueError):
+            saved_talent_interval = 2.0
+        self.talent_draw_interval.setValue(max(0.5, min(60.0, saved_talent_interval)))
+        self.talent_quality = ComboBox()
+        self.talent_quality.addItems([f"{quality} 级" for quality in range(1, 11)])
+        try:
+            saved_quality = int(config.get("talentMinimumQuality", "5"))
+        except (TypeError, ValueError):
+            saved_quality = 5
+        self.talent_quality.setCurrentIndex(max(1, min(10, saved_quality)) - 1)
+        self.talent_attribute_values = list(range(1, 17))
+        self.talent_attribute = ComboBox()
+        self.talent_attribute.addItems([
+            ATTRIBUTE_NAMES[attr_type] for attr_type in self.talent_attribute_values
+        ])
+        try:
+            saved_attribute = int(config.get("talentPreferredAttribute", "5"))
+            talent_attribute_index = self.talent_attribute_values.index(saved_attribute)
+        except (TypeError, ValueError):
+            talent_attribute_index = 0
+        self.talent_attribute.setCurrentIndex(talent_attribute_index)
+        talent_hint = QLabel("有万年灵芝时先开悟；达到最低等级且包含目标属性才激活")
+        talent_hint.setObjectName("muted")
+        self.talent_grass_label = QLabel("灵草：--"); self.talent_grass_label.setObjectName("muted")
+        talent_layout.addWidget(self.talent_enabled, 1, 0)
+        talent_layout.addWidget(QLabel("最低等级"), 1, 1)
+        talent_layout.addWidget(self.talent_quality, 1, 2)
+        talent_layout.addWidget(QLabel("目标属性"), 1, 3)
+        talent_layout.addWidget(self.talent_attribute, 1, 4)
+        talent_layout.addWidget(self.talent_grass_label, 1, 5)
+        talent_layout.addWidget(QLabel("同时次数"), 2, 1)
+        talent_layout.addWidget(self.talent_draw_count, 2, 2)
+        talent_layout.addWidget(QLabel("间隔(秒)"), 2, 3)
+        talent_layout.addWidget(self.talent_draw_interval, 2, 4)
+        talent_layout.addWidget(QLabel("总次数"), 3, 1)
+        talent_layout.addWidget(self.talent_total_count, 3, 2)
+        talent_layout.addWidget(talent_hint, 4, 0, 1, 6)
+        talent_layout.setColumnStretch(5, 1)
+        content_layout.addWidget(talent_task)
+
+        tower_task = Card(object_name="softCard")
+        tower_layout = QGridLayout(tower_task); set_margins(tower_layout, 16, 12, 16, 12)
+        tower_layout.setHorizontalSpacing(12); tower_layout.setVerticalSpacing(8)
+        self.tower_enabled = CheckBox("镇妖塔")
+        self.tower_enabled.setChecked(config.get("autoTower", "false").lower() == "true")
+        self.tower_count = ComboBox(); self.tower_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_tower_count = int(config.get("towerChallengeCount", "10"))
+        except (TypeError, ValueError):
+            saved_tower_count = 10
+        self.tower_count.setCurrentIndex(max(0, min(100, saved_tower_count)))
+        self.tower_preference_enabled = CheckBox("启用加成偏好")
+        self.tower_preference_enabled.setChecked(config.get("towerUsePreference", "true").lower() == "true")
+        self.tower_remaining_label = QLabel("当前关卡 -- / 最高 --"); self.tower_remaining_label.setObjectName("muted")
+        tower_hint = QLabel("偏好：最终增伤、最终减伤、强化灵兽、弱化灵兽、弱化治疗")
+        tower_hint.setObjectName("muted")
+        tower_layout.addWidget(self.tower_enabled, 0, 0)
+        tower_layout.addWidget(QLabel("继续挑战"), 0, 1); tower_layout.addWidget(self.tower_count, 0, 2)
+        tower_layout.addWidget(self.tower_preference_enabled, 0, 3)
+        tower_layout.addWidget(self.tower_remaining_label, 0, 4)
+        tower_layout.addWidget(tower_hint, 1, 1, 1, 4); tower_layout.setColumnStretch(5, 1)
+        content_layout.addWidget(tower_task)
+
+        adventure_task = Card(object_name="softCard")
+        adventure_layout = QGridLayout(adventure_task); set_margins(adventure_layout, 16, 12, 16, 12)
+        adventure_layout.setHorizontalSpacing(12)
+        self.adventure_enabled = CheckBox("冒险")
+        self.adventure_enabled.setChecked(config.get("autoAdventure", "false").lower() == "true")
+        self.adventure_count = ComboBox()
+        self.adventure_count.addItems(["无限次"] + [f"{value} 次" for value in range(1, 1001)])
+        saved_adventure_count = config.get("adventureCount", "unlimited")
+        try:
+            adventure_count_index = 0 if saved_adventure_count == "unlimited" else int(saved_adventure_count)
+        except (TypeError, ValueError):
+            adventure_count_index = 0
+        self.adventure_count.setCurrentIndex(max(0, min(1000, adventure_count_index)))
+        self.adventure_stage_label = QLabel("当前关卡 --"); self.adventure_stage_label.setObjectName("muted")
+        adventure_layout.addWidget(self.adventure_enabled, 0, 0)
+        adventure_layout.addWidget(QLabel("挑战次数"), 0, 1); adventure_layout.addWidget(self.adventure_count, 0, 2)
+        adventure_layout.addWidget(self.adventure_stage_label, 0, 3); adventure_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(adventure_task)
+
+        treasure_auction_task = Card(object_name="softCard")
+        treasure_auction_layout = QGridLayout(treasure_auction_task); set_margins(treasure_auction_layout, 16, 12, 16, 12)
+        treasure_auction_layout.setHorizontalSpacing(12); treasure_auction_layout.setVerticalSpacing(8)
+        self.treasure_auction_enabled = CheckBox("仙途寻宝")
+        self.treasure_auction_enabled.setChecked(config.get("autoTreasureAuction", "false").lower() == "true")
+        self.treasure_claim_enabled = CheckBox("领取奖励"); self.treasure_claim_enabled.setChecked(config.get("treasureClaimRewards", "true").lower() == "true")
+        self.treasure_begin_enabled = CheckBox("有图即寻宝"); self.treasure_begin_enabled.setChecked(config.get("treasureBeginExplores", "true").lower() == "true")
+        self.treasure_help_enabled = CheckBox("好友一键协助"); self.treasure_help_enabled.setChecked(config.get("treasureHelpFriends", "true").lower() == "true")
+        self.treasure_identify_enabled = CheckBox("自动鉴宝"); self.treasure_identify_enabled.setChecked(config.get("treasureIdentify", "true").lower() == "true")
+        self.treasure_disassemble_quality = ComboBox()
+        self.treasure_disassemble_quality.addItems(["不自动分解", "尘品及以下", "凡品及以下", "上品及以下"])
+        try:
+            saved_disassemble_quality = int(config.get("treasureDisassembleQuality", "-1")) + 1
+        except (TypeError, ValueError):
+            saved_disassemble_quality = 0
+        self.treasure_disassemble_quality.setCurrentIndex(max(0, min(3, saved_disassemble_quality)))
+        self.treasure_auction_status_label = QLabel("藏宝图 -- 张 · 仙囊 --/-- · 待鉴宝 --")
+        self.treasure_auction_status_label.setObjectName("muted")
+        treasure_auction_layout.addWidget(self.treasure_auction_enabled, 0, 0)
+        treasure_auction_layout.addWidget(self.treasure_claim_enabled, 0, 1)
+        treasure_auction_layout.addWidget(self.treasure_begin_enabled, 0, 2)
+        treasure_auction_layout.addWidget(self.treasure_help_enabled, 0, 3)
+        treasure_auction_layout.addWidget(self.treasure_identify_enabled, 0, 4)
+        treasure_auction_layout.addWidget(QLabel("仙囊满时"), 1, 1)
+        treasure_auction_layout.addWidget(self.treasure_disassemble_quality, 1, 2)
+        treasure_auction_layout.addWidget(self.treasure_auction_status_label, 1, 3, 1, 2)
+        treasure_auction_layout.setColumnStretch(5, 1)
+        content_layout.addWidget(treasure_auction_task)
+
+        divine_mind_task = Card(object_name="softCard")
+        divine_mind_layout = QGridLayout(divine_mind_task); set_margins(divine_mind_layout, 16, 12, 16, 12)
+        divine_mind_layout.setHorizontalSpacing(12)
+        self.divine_mind_enabled = CheckBox("神躯 - 气海丹田")
+        self.divine_mind_enabled.setChecked(config.get("autoDivineMindCollection", "false").lower() == "true")
+        self.divine_mind_interval = SpinBox(); self.divine_mind_interval.setRange(1, 1440)
+        try:
+            saved_divine_mind_interval = int(config.get("divineMindIntervalMinutes", "60"))
+        except (TypeError, ValueError):
+            saved_divine_mind_interval = 60
+        self.divine_mind_interval.setValue(max(1, min(1440, saved_divine_mind_interval)))
+        self.divine_mind_status_label = QLabel("等待收集"); self.divine_mind_status_label.setObjectName("muted")
+        divine_mind_layout.addWidget(self.divine_mind_enabled, 0, 0)
+        divine_mind_layout.addWidget(QLabel("收集间隔（分钟）"), 0, 1)
+        divine_mind_layout.addWidget(self.divine_mind_interval, 0, 2)
+        divine_mind_layout.addWidget(self.divine_mind_status_label, 0, 3); divine_mind_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(divine_mind_task)
+
+        magic_task = Card(object_name="softCard")
+        magic_layout = QGridLayout(magic_task); set_margins(magic_layout, 16, 12, 16, 12)
+        magic_layout.setHorizontalSpacing(12); magic_layout.setVerticalSpacing(8)
+        self.magic_draw_enabled = CheckBox("获取神通")
+        self.magic_draw_enabled.setChecked(config.get("autoMagicDraw", "false").lower() == "true")
+        self.magic_draw_count = ComboBox(); self.magic_draw_count.addItems([f"{value} 次" for value in range(4)])
+        try:
+            saved_magic_count = int(config.get("magicDrawCount", "2"))
+        except (TypeError, ValueError):
+            saved_magic_count = 2
+        self.magic_draw_count.setCurrentIndex(max(0, min(3, saved_magic_count)))
+        self.magic_paid_count = ComboBox(); self.magic_paid_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_magic_paid = int(config.get("magicPaidDrawCount", "0"))
+        except (TypeError, ValueError):
+            saved_magic_paid = 0
+        self.magic_paid_count.setCurrentIndex(max(0, min(100, saved_magic_paid)))
+        self.magic_free_label = QLabel("免费可用 --/3 次"); self.magic_free_label.setObjectName("muted")
+        self.magic_ticket_label = QLabel("天衍令可用 -- 次"); self.magic_ticket_label.setObjectName("muted")
+        magic_layout.addWidget(self.magic_draw_enabled, 0, 0)
+        magic_layout.addWidget(QLabel("免费选择"), 0, 1); magic_layout.addWidget(self.magic_draw_count, 0, 2)
+        magic_layout.addWidget(self.magic_free_label, 0, 3)
+        magic_layout.addWidget(QLabel("消耗选择"), 1, 1); magic_layout.addWidget(self.magic_paid_count, 1, 2)
+        magic_layout.addWidget(self.magic_ticket_label, 1, 3); magic_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(magic_task)
+
+        spirit_task = Card(object_name="softCard")
+        spirit_layout = QGridLayout(spirit_task); set_margins(spirit_layout, 16, 12, 16, 12)
+        spirit_layout.setHorizontalSpacing(12); spirit_layout.setVerticalSpacing(8)
+        self.spirit_draw_enabled = CheckBox("召唤精怪")
+        self.spirit_draw_enabled.setChecked(config.get("autoSpiritDraw", "false").lower() == "true")
+        self.spirit_draw_count = ComboBox(); self.spirit_draw_count.addItems(["0 次", "1 次", "2 次"])
+        try:
+            saved_spirit_count = int(config.get("spiritDrawCount", "2"))
+        except (TypeError, ValueError):
+            saved_spirit_count = 2
+        self.spirit_draw_count.setCurrentIndex(max(0, min(2, saved_spirit_count)))
+        self.spirit_paid_count = ComboBox(); self.spirit_paid_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_spirit_paid = int(config.get("spiritPaidDrawCount", "0"))
+        except (TypeError, ValueError):
+            saved_spirit_paid = 0
+        self.spirit_paid_count.setCurrentIndex(max(0, min(100, saved_spirit_paid)))
+        self.spirit_remaining_label = QLabel("免费可用 --/2 次")
+        self.spirit_remaining_label.setObjectName("muted")
+        self.spirit_ticket_label = QLabel("召唤令可用 -- 次"); self.spirit_ticket_label.setObjectName("muted")
+        spirit_layout.addWidget(self.spirit_draw_enabled, 0, 0)
+        spirit_layout.addWidget(QLabel("免费选择"), 0, 1); spirit_layout.addWidget(self.spirit_draw_count, 0, 2)
+        spirit_layout.addWidget(self.spirit_remaining_label, 0, 3)
+        spirit_layout.addWidget(QLabel("消耗选择"), 1, 1); spirit_layout.addWidget(self.spirit_paid_count, 1, 2)
+        spirit_layout.addWidget(self.spirit_ticket_label, 1, 3); spirit_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(spirit_task)
+
+        law_looks_task = Card(object_name="softCard")
+        law_looks_layout = QGridLayout(law_looks_task); set_margins(law_looks_layout, 16, 12, 16, 12)
+        law_looks_layout.setHorizontalSpacing(12); law_looks_layout.setVerticalSpacing(8)
+        self.law_looks_draw_enabled = CheckBox("召唤法象")
+        self.law_looks_draw_enabled.setChecked(config.get("autoLawLooksDraw", "false").lower() == "true")
+        self.law_looks_draw_count = ComboBox(); self.law_looks_draw_count.addItems(["0 次", "1 次", "2 次"])
+        self.law_looks_paid_count = ComboBox(); self.law_looks_paid_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_law_looks_count = int(config.get("lawLooksDrawCount", "2"))
+            saved_law_looks_paid = int(config.get("lawLooksPaidDrawCount", "0"))
+        except (TypeError, ValueError):
+            saved_law_looks_count, saved_law_looks_paid = 2, 0
+        self.law_looks_draw_count.setCurrentIndex(max(0, min(2, saved_law_looks_count)))
+        self.law_looks_paid_count.setCurrentIndex(max(0, min(100, saved_law_looks_paid)))
+        self.law_looks_remaining_label = QLabel("免费可用 --/2 次"); self.law_looks_remaining_label.setObjectName("muted")
+        self.law_looks_ticket_label = QLabel("引灵灯可用 -- 次"); self.law_looks_ticket_label.setObjectName("muted")
+        law_looks_layout.addWidget(self.law_looks_draw_enabled, 0, 0)
+        law_looks_layout.addWidget(QLabel("免费选择"), 0, 1); law_looks_layout.addWidget(self.law_looks_draw_count, 0, 2)
+        law_looks_layout.addWidget(self.law_looks_remaining_label, 0, 3)
+        law_looks_layout.addWidget(QLabel("消耗选择"), 1, 1); law_looks_layout.addWidget(self.law_looks_paid_count, 1, 2)
+        law_looks_layout.addWidget(self.law_looks_ticket_label, 1, 3); law_looks_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(law_looks_task)
+
+        pet_kernel_task = Card(object_name="softCard")
+        pet_kernel_layout = QGridLayout(pet_kernel_task); set_margins(pet_kernel_layout, 16, 12, 16, 12)
+        pet_kernel_layout.setHorizontalSpacing(12); pet_kernel_layout.setVerticalSpacing(8)
+        self.pet_kernel_draw_enabled = CheckBox("凝聚内丹")
+        self.pet_kernel_draw_enabled.setChecked(config.get("autoPetKernelDraw", "false").lower() == "true")
+        self.pet_kernel_draw_count = ComboBox(); self.pet_kernel_draw_count.addItems(["0 次", "1 次", "2 次"])
+        self.pet_kernel_paid_count = ComboBox(); self.pet_kernel_paid_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_pet_kernel_count = int(config.get("petKernelDrawCount", "2"))
+            saved_pet_kernel_paid = int(config.get("petKernelPaidDrawCount", "0"))
+        except (TypeError, ValueError):
+            saved_pet_kernel_count, saved_pet_kernel_paid = 2, 0
+        self.pet_kernel_draw_count.setCurrentIndex(max(0, min(2, saved_pet_kernel_count)))
+        self.pet_kernel_paid_count.setCurrentIndex(max(0, min(100, saved_pet_kernel_paid)))
+        self.pet_kernel_remaining_label = QLabel("免费可用 --/2 次"); self.pet_kernel_remaining_label.setObjectName("muted")
+        self.pet_kernel_item_label = QLabel("本源丹可用 -- 次"); self.pet_kernel_item_label.setObjectName("muted")
+        pet_kernel_layout.addWidget(self.pet_kernel_draw_enabled, 0, 0)
+        pet_kernel_layout.addWidget(QLabel("免费选择"), 0, 1); pet_kernel_layout.addWidget(self.pet_kernel_draw_count, 0, 2)
+        pet_kernel_layout.addWidget(self.pet_kernel_remaining_label, 0, 3)
+        pet_kernel_layout.addWidget(QLabel("消耗选择"), 1, 1); pet_kernel_layout.addWidget(self.pet_kernel_paid_count, 1, 2)
+        pet_kernel_layout.addWidget(self.pet_kernel_item_label, 1, 3); pet_kernel_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(pet_kernel_task)
+
+        universe_skill_task = Card(object_name="softCard")
+        universe_skill_layout = QGridLayout(universe_skill_task); set_margins(universe_skill_layout, 16, 12, 16, 12)
+        universe_skill_layout.setHorizontalSpacing(12); universe_skill_layout.setVerticalSpacing(8)
+        self.universe_skill_draw_enabled = CheckBox("山海途 - 洞悉天机")
+        self.universe_skill_draw_enabled.setChecked(config.get("autoUniverseSkillDraw", "false").lower() == "true")
+        self.universe_skill_draw_count = ComboBox(); self.universe_skill_draw_count.addItems(["0 次", "1 次", "2 次"])
+        self.universe_skill_paid_count = ComboBox(); self.universe_skill_paid_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_universe_skill_count = int(config.get("universeSkillDrawCount", "2"))
+            saved_universe_skill_paid = int(config.get("universeSkillPaidDrawCount", "0"))
+        except (TypeError, ValueError):
+            saved_universe_skill_count, saved_universe_skill_paid = 2, 0
+        self.universe_skill_draw_count.setCurrentIndex(max(0, min(2, saved_universe_skill_count)))
+        self.universe_skill_paid_count.setCurrentIndex(max(0, min(100, saved_universe_skill_paid)))
+        self.universe_skill_remaining_label = QLabel("免费可用 --/2 次"); self.universe_skill_remaining_label.setObjectName("muted")
+        self.universe_skill_item_label = QLabel("太虚元石可用 -- 次"); self.universe_skill_item_label.setObjectName("muted")
+        universe_skill_layout.addWidget(self.universe_skill_draw_enabled, 0, 0)
+        universe_skill_layout.addWidget(QLabel("免费选择"), 0, 1); universe_skill_layout.addWidget(self.universe_skill_draw_count, 0, 2)
+        universe_skill_layout.addWidget(self.universe_skill_remaining_label, 0, 3)
+        universe_skill_layout.addWidget(QLabel("消耗选择"), 1, 1); universe_skill_layout.addWidget(self.universe_skill_paid_count, 1, 2)
+        universe_skill_layout.addWidget(self.universe_skill_item_label, 1, 3); universe_skill_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(universe_skill_task)
+
+        universe_wheel_task = Card(object_name="softCard")
+        universe_wheel_layout = QGridLayout(universe_wheel_task); set_margins(universe_wheel_layout, 16, 12, 16, 12)
+        universe_wheel_layout.setHorizontalSpacing(12)
+        self.universe_wheel_draw_enabled = CheckBox("天道轮台 - 衍取")
+        self.universe_wheel_draw_enabled.setChecked(config.get("autoUniverseWheelDraw", "false").lower() == "true")
+        self.universe_wheel_draw_count = ComboBox(); self.universe_wheel_draw_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_universe_wheel_count = int(config.get("universeWheelDrawCount", "0"))
+        except (TypeError, ValueError):
+            saved_universe_wheel_count = 0
+        self.universe_wheel_draw_count.setCurrentIndex(max(0, min(100, saved_universe_wheel_count)))
+        self.universe_stone_label = QLabel("造化石可用 -- 次"); self.universe_stone_label.setObjectName("muted")
+        universe_wheel_layout.addWidget(self.universe_wheel_draw_enabled, 0, 0)
+        universe_wheel_layout.addWidget(QLabel("衍取次数"), 0, 1); universe_wheel_layout.addWidget(self.universe_wheel_draw_count, 0, 2)
+        universe_wheel_layout.addWidget(self.universe_stone_label, 0, 3); universe_wheel_layout.setColumnStretch(4, 1)
+        content_layout.addWidget(universe_wheel_task)
+
+        treasure_task = Card(object_name="softCard")
+        treasure_layout = QGridLayout(treasure_task); set_margins(treasure_layout, 16, 12, 16, 12)
+        treasure_layout.setHorizontalSpacing(12); treasure_layout.setVerticalSpacing(8)
+        self.magic_treasure_enabled = CheckBox("法宝寻宝")
+        self.magic_treasure_enabled.setChecked(config.get("autoMagicTreasure", "false").lower() == "true")
+        treasure_layout.addWidget(self.magic_treasure_enabled, 0, 0)
+        treasure_layout.addWidget(QLabel("免费选择"), 0, 2)
+        treasure_layout.addWidget(QLabel("免费可用"), 0, 4)
+        treasure_layout.addWidget(QLabel("消耗选择"), 0, 5)
+        treasure_layout.addWidget(QLabel("灵盘可用"), 0, 7)
+        self.magic_treasure_free_counts = {}
+        self.magic_treasure_paid_counts = {}
+        self.magic_treasure_free_labels = {}
+        self.magic_treasure_compass_labels = {}
+        for row, (pool_id, pool_name) in enumerate(((1, "灵瀚仙界"), (2, "神遗灵界"), (3, "缥缈凡界")), 1):
+            free_count = ComboBox(); free_count.addItems(["0 次", "1 次", "2 次"])
+            paid_count = ComboBox(); paid_count.addItems([f"{value} 次" for value in range(101)])
+            try:
+                saved_free = int(config.get(f"magicTreasure{pool_id}FreeCount", "2"))
+                saved_paid = int(config.get(f"magicTreasure{pool_id}PaidCount", "0"))
+            except (TypeError, ValueError):
+                saved_free, saved_paid = 2, 0
+            free_count.setCurrentIndex(max(0, min(2, saved_free)))
+            paid_count.setCurrentIndex(max(0, min(100, saved_paid)))
+            free_label = QLabel("--/2 次"); free_label.setObjectName("muted")
+            compass_label = QLabel("-- 个"); compass_label.setObjectName("muted")
+            self.magic_treasure_free_counts[pool_id] = free_count
+            self.magic_treasure_paid_counts[pool_id] = paid_count
+            self.magic_treasure_free_labels[pool_id] = free_label
+            self.magic_treasure_compass_labels[pool_id] = compass_label
+            treasure_layout.addWidget(QLabel(pool_name), row, 1)
+            treasure_layout.addWidget(free_count, row, 2)
+            treasure_layout.addWidget(free_label, row, 4)
+            treasure_layout.addWidget(paid_count, row, 5)
+            treasure_layout.addWidget(compass_label, row, 7)
+        treasure_layout.setColumnStretch(8, 1)
+        content_layout.addWidget(treasure_task)
+        content_layout.addStretch()
+
+        self.task_checkboxes = [
+            self.chop_enabled,
+            self.pupil_training_enabled,
+            self.rank_enabled,
+            self.wild_boss_enabled,
+            self.invade_enabled,
+            self.star_trial_enabled,
+            self.hero_rank_enabled,
+            self.destiny_travel_enabled,
+            self.profession_quick_enabled,
+            self.profession_challenge_enabled,
+            self.yard_daily_enabled,
+            self.yard_draw_enabled,
+            self.homeland_enabled,
+            self.talent_enabled,
+            self.tower_enabled,
+            self.adventure_enabled,
+            self.treasure_auction_enabled,
+            self.divine_mind_enabled,
+            self.magic_draw_enabled,
+            self.spirit_draw_enabled,
+            self.law_looks_draw_enabled,
+            self.pet_kernel_draw_enabled,
+            self.universe_skill_draw_enabled,
+            self.universe_wheel_draw_enabled,
+            self.magic_treasure_enabled,
+        ]
+        for checkbox in self.task_checkboxes:
+            checkbox.toggled.connect(self._sync_select_all_tasks)
+        self._sync_select_all_tasks()
         return panel
+
+    def _set_all_tasks(self, checked: bool) -> None:
+        for checkbox in self.task_checkboxes:
+            checkbox.setChecked(checked)
+
+    def _sync_select_all_tasks(self, _checked: bool | None = None) -> None:
+        all_checked = bool(self.task_checkboxes) and all(
+            checkbox.isChecked() for checkbox in self.task_checkboxes
+        )
+        self.select_all_tasks.blockSignals(True)
+        self.select_all_tasks.setChecked(all_checked)
+        self.select_all_tasks.blockSignals(False)
 
     def _add_limited_task_row(
         self, layout: QGridLayout, row: int, name: str, maximum: int,
@@ -624,9 +1129,9 @@ class XundaoWindow(FramelessWindow):
 
         def worker() -> None:
             try:
-                self.event.emit("profile_snapshot", fetch_role_snapshot(selected_server, OUTPUT_DIR))
+                self._emit_event("profile_snapshot", fetch_role_snapshot(selected_server, OUTPUT_DIR))
             except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
-                self.event.emit("profile_error", f"{type(exc).__name__}: {exc}")
+                self._emit_event("profile_error", f"{type(exc).__name__}: {exc}")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -681,8 +1186,8 @@ class XundaoWindow(FramelessWindow):
                 roles = fetch_roles(game_data["auth"]["data"]["authCode"], OUTPUT_DIR)
                 path = OUTPUT_DIR / "login-success.json"
                 if not path.exists(): save_json(OUTPUT_DIR, "login-success.json", {"success": True, "data": {"token": token, "userId": ""}})
-                self.event.emit("dashboard", (path, roles))
-            except Exception as exc: self.event.emit("cached_invalid", str(exc))
+                self._emit_event("dashboard", (path, roles))
+            except Exception as exc: self._emit_event("cached_invalid", str(exc))
         self.worker = threading.Thread(target=worker, daemon=True); self.worker.start()
 
     def start_login(self) -> None:
@@ -709,18 +1214,18 @@ class XundaoWindow(FramelessWindow):
             save_json(OUTPUT_DIR, "get-login-token.json", token_response)
             qr_data = token_response["data"]["qrCode"]; qr_url = str(qr_data["url"]); login_token = str(qr_data["token"])
             image = qrcode.make(qr_url).convert("RGB").resize((286, 286), Image.Resampling.NEAREST)
-            stream = io.BytesIO(); image.save(stream, format="PNG"); self.event.emit("qr", stream.getvalue())
+            stream = io.BytesIO(); image.save(stream, format="PNG"); self._emit_event("qr", stream.getvalue())
             while not stop_event.wait(POLL_INTERVAL):
                 payload = request_json(session, f"{BASE_URL}{SERVICE}/loginForPc?{query}", {"token": login_token, "userAgent": DEFAULT_UA}, 15)
                 save_json(OUTPUT_DIR, "login-last-response.json", payload); state = classify(payload)
                 if state == "success":
                     path = save_json(OUTPUT_DIR, "login-success.json", payload); token = str(payload["data"]["token"]); update_config(sessionToken=token)
                     game_data = fetch_game_data(token, config["ctoken"], OUTPUT_DIR); roles = fetch_roles(game_data["auth"]["data"]["authCode"], OUTPUT_DIR)
-                    self.event.emit("dashboard", (path, roles)); return
-                if state in ("expired", "failed"): self.event.emit(state, payload); return
-                self.event.emit("status", "等待扫码确认…")
+                    self._emit_event("dashboard", (path, roles)); return
+                if state in ("expired", "failed"): self._emit_event(state, payload); return
+                self._emit_event("status", "等待扫码确认…")
         except Exception as exc:
-            if not stop_event.is_set(): self.event.emit("error", str(exc))
+            if not stop_event.is_set(): self._emit_event("error", str(exc))
 
     def start_chop(self) -> None:
         if not self.current_role:
@@ -735,10 +1240,29 @@ class XundaoWindow(FramelessWindow):
         run_profession_challenge = self.profession_challenge_enabled.isChecked()
         run_yard_daily = self.yard_daily_enabled.isChecked()
         run_yard_draw = self.yard_draw_enabled.isChecked()
+        run_homeland = self.homeland_enabled.isChecked()
+        run_talent = self.talent_enabled.isChecked()
+        run_tower = self.tower_enabled.isChecked()
+        run_adventure = self.adventure_enabled.isChecked()
+        run_treasure_auction = self.treasure_auction_enabled.isChecked()
+        run_divine_mind = self.divine_mind_enabled.isChecked()
+        run_magic_draw = self.magic_draw_enabled.isChecked()
+        run_spirit_draw = self.spirit_draw_enabled.isChecked()
+        run_law_looks_draw = self.law_looks_draw_enabled.isChecked()
+        run_pet_kernel_draw = self.pet_kernel_draw_enabled.isChecked()
+        run_universe_skill_draw = self.universe_skill_draw_enabled.isChecked()
+        run_universe_wheel_draw = self.universe_wheel_draw_enabled.isChecked()
+        run_magic_treasure = self.magic_treasure_enabled.isChecked()
+        run_pupil_training = self.pupil_training_enabled.isChecked()
         if not any((
             run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank,
             run_destiny_travel, run_profession_quick, run_profession_challenge,
-            run_yard_daily, run_yard_draw,
+            run_yard_daily, run_yard_draw, run_homeland, run_talent, run_tower, run_adventure,
+            run_treasure_auction,
+            run_divine_mind,
+            run_magic_draw, run_spirit_draw, run_law_looks_draw, run_pet_kernel_draw,
+            run_universe_skill_draw, run_universe_wheel_draw,
+            run_magic_treasure, run_pupil_training,
         )):
             self.append_log("请至少选择一个任务。")
             return
@@ -762,6 +1286,62 @@ class XundaoWindow(FramelessWindow):
             professionChallengeCount=self.profession_challenge_count.currentIndex() + 1,
             autoYardDaily=run_yard_daily, autoYardDraw=run_yard_draw,
             yardDrawCount=self.yard_draw_count.currentIndex() + 1,
+            autoHomeland=run_homeland,
+            homelandPreferredItem=self.homeland_resource_ids[self.homeland_resource.currentIndex()],
+            homelandPreferredLevel=self.homeland_level.currentIndex() + 1,
+            autoTalent=run_talent,
+            talentDrawCount=self.talent_draw_count.value(),
+            talentTotalCount=(
+                "unlimited" if self.talent_total_count.currentIndex() == 0
+                else self.talent_total_count.currentIndex()
+            ),
+            talentDrawInterval=self.talent_draw_interval.value(),
+            talentMinimumQuality=self.talent_quality.currentIndex() + 1,
+            talentPreferredAttribute=self.talent_attribute_values[self.talent_attribute.currentIndex()],
+            autoTower=run_tower,
+            towerChallengeCount=self.tower_count.currentIndex(),
+            towerUsePreference=self.tower_preference_enabled.isChecked(),
+            autoAdventure=run_adventure,
+            adventureCount=(
+                "unlimited" if self.adventure_count.currentIndex() == 0
+                else self.adventure_count.currentIndex()
+            ),
+            autoTreasureAuction=run_treasure_auction,
+            treasureClaimRewards=self.treasure_claim_enabled.isChecked(),
+            treasureBeginExplores=self.treasure_begin_enabled.isChecked(),
+            treasureHelpFriends=self.treasure_help_enabled.isChecked(),
+            treasureIdentify=self.treasure_identify_enabled.isChecked(),
+            treasureDisassembleQuality=self.treasure_disassemble_quality.currentIndex() - 1,
+            autoDivineMindCollection=run_divine_mind,
+            divineMindIntervalMinutes=self.divine_mind_interval.value(),
+            autoMagicDraw=run_magic_draw,
+            magicDrawCount=self.magic_draw_count.currentIndex(),
+            magicPaidDrawCount=self.magic_paid_count.currentIndex(),
+            autoSpiritDraw=run_spirit_draw,
+            spiritDrawCount=self.spirit_draw_count.currentIndex(),
+            spiritPaidDrawCount=self.spirit_paid_count.currentIndex(),
+            autoLawLooksDraw=run_law_looks_draw,
+            lawLooksDrawCount=self.law_looks_draw_count.currentIndex(),
+            lawLooksPaidDrawCount=self.law_looks_paid_count.currentIndex(),
+            autoPetKernelDraw=run_pet_kernel_draw,
+            petKernelDrawCount=self.pet_kernel_draw_count.currentIndex(),
+            petKernelPaidDrawCount=self.pet_kernel_paid_count.currentIndex(),
+            autoUniverseSkillDraw=run_universe_skill_draw,
+            universeSkillDrawCount=self.universe_skill_draw_count.currentIndex(),
+            universeSkillPaidDrawCount=self.universe_skill_paid_count.currentIndex(),
+            autoUniverseWheelDraw=run_universe_wheel_draw,
+            universeWheelDrawCount=self.universe_wheel_draw_count.currentIndex(),
+            autoMagicTreasure=run_magic_treasure,
+            **{
+                f"magicTreasure{pool_id}{kind}Count": combos[pool_id].currentIndex()
+                for kind, combos in (
+                    ("Free", self.magic_treasure_free_counts),
+                    ("Paid", self.magic_treasure_paid_counts),
+                )
+                for pool_id in (1, 2, 3)
+            },
+            autoPupilTraining=run_pupil_training,
+            pupilTrainingRounds=self.pupil_training_rounds.value(),
         )
         self.chop_stop_event = threading.Event()
         self.start_button.setEnabled(False); role = dict(self.current_role)
@@ -776,6 +1356,40 @@ class XundaoWindow(FramelessWindow):
         destiny_travel_count = self.destiny_travel_count.currentIndex() + 1
         profession_challenge_count = self.profession_challenge_count.currentIndex() + 1
         yard_draw_count = self.yard_draw_count.currentIndex() + 1
+        homeland_preferred_item = self.homeland_resource_ids[self.homeland_resource.currentIndex()]
+        homeland_preferred_level = self.homeland_level.currentIndex() + 1
+        talent_minimum_quality = self.talent_quality.currentIndex() + 1
+        talent_preferred_attribute = self.talent_attribute_values[self.talent_attribute.currentIndex()]
+        talent_draw_count = self.talent_draw_count.value()
+        talent_total_count = self.talent_total_count.currentIndex()
+        talent_draw_interval = self.talent_draw_interval.value()
+        tower_count = self.tower_count.currentIndex()
+        tower_use_preference = self.tower_preference_enabled.isChecked()
+        adventure_count = self.adventure_count.currentIndex()
+        treasure_claim_rewards = self.treasure_claim_enabled.isChecked()
+        treasure_begin_explores = self.treasure_begin_enabled.isChecked()
+        treasure_help_friends = self.treasure_help_enabled.isChecked()
+        treasure_identify = self.treasure_identify_enabled.isChecked()
+        treasure_disassemble_quality = self.treasure_disassemble_quality.currentIndex() - 1
+        divine_mind_interval = self.divine_mind_interval.value()
+        magic_draw_count = self.magic_draw_count.currentIndex()
+        magic_paid_count = self.magic_paid_count.currentIndex()
+        spirit_draw_count = self.spirit_draw_count.currentIndex()
+        spirit_paid_count = self.spirit_paid_count.currentIndex()
+        law_looks_draw_count = self.law_looks_draw_count.currentIndex()
+        law_looks_paid_count = self.law_looks_paid_count.currentIndex()
+        pet_kernel_draw_count = self.pet_kernel_draw_count.currentIndex()
+        pet_kernel_paid_count = self.pet_kernel_paid_count.currentIndex()
+        universe_skill_draw_count = self.universe_skill_draw_count.currentIndex()
+        universe_skill_paid_count = self.universe_skill_paid_count.currentIndex()
+        universe_wheel_draw_count = self.universe_wheel_draw_count.currentIndex()
+        magic_treasure_free_counts = {
+            pool_id: combo.currentIndex() for pool_id, combo in self.magic_treasure_free_counts.items()
+        }
+        magic_treasure_paid_counts = {
+            pool_id: combo.currentIndex() for pool_id, combo in self.magic_treasure_paid_counts.items()
+        }
+        pupil_training_rounds = self.pupil_training_rounds.value()
         count_text = "无限次" if count is None else f"{count} 次"
         if run_wild_boss:
             self.append_log(
@@ -786,6 +1400,24 @@ class XundaoWindow(FramelessWindow):
             self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count_text}。")
         def worker() -> None:
             try:
+                collection_thread = None
+                if run_divine_mind:
+                    def collect_divine_mind() -> None:
+                        try:
+                            result = run_divine_mind_collection_tasks(
+                                int(role["serverId"]), OUTPUT_DIR, 1,
+                                lambda msg: self._emit_event("chop_log", msg),
+                                self.chop_stop_event,
+                                snapshot=lambda value: self._emit_event("profile_snapshot", value),
+                                interval_minutes=divine_mind_interval,
+                            )
+                            result["taskName"] = "神躯 - 气海丹田"
+                            self._emit_event("limited_task_result", result)
+                        except Exception as exc:
+                            self._emit_event("chop_log", f"气海丹田收集失败：{type(exc).__name__}: {exc}")
+
+                    collection_thread = threading.Thread(target=collect_divine_mind, daemon=True)
+                    collection_thread.start()
                 auxiliary_tasks = [
                     (run_wild_boss, run_wild_boss_tasks, wild_boss_count, "挑战妖王"),
                     (run_invade, run_invade_tasks, invade_count, "异兽入侵"),
@@ -799,6 +1431,104 @@ class XundaoWindow(FramelessWindow):
                     ),
                     (run_yard_daily, run_yard_daily_tasks, 1, "仙居日常"),
                     (run_yard_draw, run_yard_draw_tasks, yard_draw_count, "仙居造物"),
+                    (
+                        run_homeland,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_homeland_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            preferred_item_id=homeland_preferred_item,
+                            preferred_level=homeland_preferred_level,
+                        ),
+                        1, "福地鼠宝采集",
+                    ),
+                    (
+                        run_talent,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_talent_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            minimum_quality=talent_minimum_quality,
+                            preferred_attribute=talent_preferred_attribute,
+                            interval=talent_draw_interval,
+                            concurrent_count=talent_draw_count,
+                        ),
+                        talent_total_count, "灵脉激发",
+                    ),
+                    (
+                        run_tower,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_tower_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            use_preferences=tower_use_preference,
+                        ),
+                        tower_count, "镇妖塔",
+                    ),
+                    (run_adventure, run_adventure_tasks, adventure_count, "冒险"),
+                    (
+                        run_treasure_auction,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_treasure_auction_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            claim_rewards=treasure_claim_rewards,
+                            begin_explores=treasure_begin_explores,
+                            help_friends=treasure_help_friends,
+                            identify_treasures=treasure_identify,
+                            disassemble_quality=treasure_disassemble_quality,
+                        ),
+                        1, "仙途寻宝",
+                    ),
+                    (
+                        run_magic_draw,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_magic_draw_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            paid_count=magic_paid_count,
+                        ),
+                        magic_draw_count, "获取神通",
+                    ),
+                    (
+                        run_spirit_draw,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_spirit_draw_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            paid_count=spirit_paid_count,
+                        ),
+                        spirit_draw_count, "召唤精怪",
+                    ),
+                    (
+                        run_law_looks_draw,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_law_looks_draw_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            paid_count=law_looks_paid_count,
+                        ),
+                        law_looks_draw_count, "召唤法象",
+                    ),
+                    (
+                        run_pet_kernel_draw,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_pet_kernel_draw_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            paid_count=pet_kernel_paid_count,
+                        ),
+                        pet_kernel_draw_count, "凝聚内丹",
+                    ),
+                    (
+                        run_universe_skill_draw,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_universe_skill_draw_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            paid_count=universe_skill_paid_count,
+                        ),
+                        universe_skill_draw_count, "山海途 - 洞悉天机",
+                    ),
+                    (
+                        run_universe_wheel_draw, run_universe_wheel_draw_tasks,
+                        universe_wheel_draw_count, "天道轮台 - 衍取",
+                    ),
+                    (
+                        run_magic_treasure,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_magic_treasure_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            free_counts=magic_treasure_free_counts,
+                            paid_counts=magic_treasure_paid_counts,
+                        ),
+                        1, "法宝寻宝",
+                    ),
+                    (
+                        run_pupil_training, run_pupil_training_tasks,
+                        pupil_training_rounds, "宗门 - 弟子修炼",
+                    ),
                 ]
                 task_results = []
                 for enabled, runner, task_count, task_name in auxiliary_tasks:
@@ -806,37 +1536,42 @@ class XundaoWindow(FramelessWindow):
                         continue
                     result = runner(
                         int(role["serverId"]), OUTPUT_DIR, task_count,
-                        lambda msg: self.event.emit("chop_log", msg), self.chop_stop_event,
-                        snapshot=lambda value: self.event.emit("profile_snapshot", value),
+                        lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
+                        snapshot=lambda value: self._emit_event("profile_snapshot", value),
                     )
                     result["taskName"] = task_name
                     task_results.append(result)
-                    self.event.emit("limited_task_result", result)
+                    self._emit_event("limited_task_result", result)
                 if not run_chop:
-                    self.event.emit("auxiliary_tasks_done", task_results)
+                    if collection_thread is not None:
+                        collection_thread.join()
+                    self._emit_event("auxiliary_tasks_done", task_results)
                     return
                 result = run_chop_tasks(
                     int(role["serverId"]), OUTPUT_DIR, count, interval, action, quality,
-                    lambda msg: self.event.emit("chop_log", msg), self.chop_stop_event,
+                    lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
                     keep_attribute_type=attribute_type,
-                    snapshot=lambda value: self.event.emit("profile_snapshot", value),
+                    snapshot=lambda value: self._emit_event("profile_snapshot", value),
                     auto_rank_battle=auto_rank_battle,
                 )
                 try:
-                    self.event.emit(
+                    self._emit_event(
                         "profile_snapshot",
                         fetch_role_snapshot(int(role["serverId"]), OUTPUT_DIR),
                     )
                 except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
-                    self.event.emit("profile_error", f"最终资源刷新失败：{type(exc).__name__}: {exc}")
-                self.event.emit("chop_success", result)
-            except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
+                    self._emit_event("profile_error", f"最终资源刷新失败：{type(exc).__name__}: {exc}")
+                if collection_thread is not None:
+                    collection_thread.join()
+                self._emit_event("chop_success", result)
+            except Exception as exc:
+                self.chop_stop_event.set()
                 detail = traceback.format_exc()
                 try:
                     (OUTPUT_DIR / "chop-task-error.log").write_text(detail, encoding="utf-8")
                 except OSError:
                     pass
-                self.event.emit("chop_error", f"{type(exc).__name__}: {exc}")
+                self._emit_event("chop_error", f"{type(exc).__name__}: {exc}")
         threading.Thread(target=worker, daemon=True).start()
 
     def stop_chop(self) -> None:
@@ -846,10 +1581,12 @@ class XundaoWindow(FramelessWindow):
         self.chop_stop_event.set()
         self.append_log("已请求停止，当前操作完成后将安全退出。")
 
-    def _handle_event(self, event: str, value: object) -> None:
-        if event == "dashboard": self.show_dashboard(*value)
+    def _handle_event(self, event: str, payload: str) -> None:
+        value = json.loads(payload)
+        if event == "dashboard": self.show_dashboard(Path(value["path"]), value["roles"])
         elif event == "qr":
-            pixmap = QPixmap(); pixmap.loadFromData(value); self.qr_label.setPixmap(pixmap); self.login_status.setText("二维码已生成，请使用支付宝扫码")
+            data = base64.b64decode(value["__bytes__"])
+            pixmap = QPixmap(); pixmap.loadFromData(data); self.qr_label.setPixmap(pixmap); self.login_status.setText("二维码已生成，请使用支付宝扫码")
         elif event == "status": self.login_status.setText(str(value))
         elif event == "cached_invalid": self.login_status.setText("上次登录已失效，请重新扫码"); self.start_login()
         elif event == "expired": self.login_status.setText("二维码已过期，请刷新")
@@ -863,6 +1600,14 @@ class XundaoWindow(FramelessWindow):
             self.resource_values["仙玉"].setText(self.format_amount(value.get("jade", 0)))
             self.resource_values["妖力"].setText(self.format_amount(value.get("power", 0)))
             self.resource_values["境界"].setText(str(value.get("realmId", "-")))
+            if hasattr(self, "peach_count_label"):
+                self.peach_count_label.setText(
+                    f"仙桃：{self.format_amount(value.get('peachCount', 0))}"
+                )
+            if hasattr(self, "talent_grass_label"):
+                self.talent_grass_label.setText(
+                    f"灵草：{self.format_amount(value.get('talentGrassCount', 0))}"
+                )
             if hasattr(self, "rank_ticket_label"):
                 self.rank_ticket_label.setText(f"（挑战状：{value.get('rankBattleTicket', 0)} 张）")
             if hasattr(self, "wild_boss_remaining_label"):
@@ -877,7 +1622,9 @@ class XundaoWindow(FramelessWindow):
                 remaining_text = "--" if remaining is None else str(int(remaining))
                 self.wild_boss_remaining_label.setText(f"今日剩余 {remaining_text}/{daily_max} 次")
             if hasattr(self, "invade_remaining_label"):
-                self.invade_remaining_label.setText(f"今日剩余 {int(value.get('invadeRemaining', 0))}/5 次")
+                invade_remaining = value.get("invadeRemaining")
+                invade_text = "--" if invade_remaining is None else str(int(invade_remaining))
+                self.invade_remaining_label.setText(f"今日剩余 {invade_text}/5 次")
                 self.star_trial_remaining_label.setText(f"今日剩余 {int(value.get('starTrialRemaining', 0))}/30 次")
                 self.hero_rank_remaining_label.setText(f"当前体力 {int(value.get('heroRankEnergy', 0))}/10")
                 destiny_power = value.get("destinyPower")
@@ -889,6 +1636,81 @@ class XundaoWindow(FramelessWindow):
                 challenge_text = "--" if profession_challenge is None else str(int(profession_challenge))
                 self.profession_quick_remaining_label.setText(f"今日剩余 {quick_text}/1 次")
                 self.profession_challenge_remaining_label.setText(f"今日剩余 {challenge_text}/30 次")
+            if hasattr(self, "spirit_remaining_label"):
+                spirit_remaining = value.get("spiritSummonRemaining")
+                spirit_text = "--" if spirit_remaining is None else str(int(spirit_remaining))
+                self.spirit_remaining_label.setText(f"免费可用 {spirit_text}/2 次")
+                self.spirit_ticket_label.setText(
+                    f"召唤令可用 {int(value.get('spiritTicketCount', 0))} 次"
+                )
+            if hasattr(self, "tower_remaining_label"):
+                tower_current = value.get("towerCurrentPass")
+                tower_max = value.get("towerMaxPass")
+                current_text = "--" if tower_current is None else str(int(tower_current))
+                max_text = "--" if tower_max is None else str(int(tower_max))
+                self.tower_remaining_label.setText(f"当前关卡 {current_text} / 最高 {max_text}")
+            if hasattr(self, "adventure_stage_label"):
+                adventure_stage = value.get("adventureCurrentStage")
+                adventure_text = "--" if adventure_stage is None else str(int(adventure_stage))
+                self.adventure_stage_label.setText(f"当前关卡 {adventure_text}")
+            if hasattr(self, "treasure_auction_status_label"):
+                maps = value.get("treasureMapCount")
+                used = value.get("treasureWarehouseUsed")
+                limit = value.get("treasureWarehouseLimit")
+                unidentified = value.get("treasureUnidentifiedCount")
+                display = lambda item: "--" if item is None else str(int(item))
+                self.treasure_auction_status_label.setText(
+                    f"藏宝图 {display(maps)} 张 · 仙囊 {display(used)}/{display(limit)} · "
+                    f"待鉴宝 {display(unidentified)}"
+                )
+            if hasattr(self, "divine_mind_status_label"):
+                last_collected = value.get("divineMindLastCollected")
+                total_collected = value.get("divineMindTotalCollected")
+                if last_collected is not None:
+                    self.divine_mind_status_label.setText(
+                        f"上次 {int(last_collected)} / 累计 {int(total_collected or 0)} 真元"
+                    )
+            if hasattr(self, "magic_free_label"):
+                magic_remaining = value.get("magicFreeRemaining")
+                magic_text = "--" if magic_remaining is None else str(int(magic_remaining))
+                self.magic_free_label.setText(f"免费可用 {magic_text}/3 次")
+                self.magic_ticket_label.setText(
+                    f"天衍令可用 {int(value.get('magicTicketCount', 0))} 次"
+                )
+            if hasattr(self, "law_looks_remaining_label"):
+                law_looks_remaining = value.get("lawLooksFreeRemaining")
+                law_looks_text = "--" if law_looks_remaining is None else str(int(law_looks_remaining))
+                self.law_looks_remaining_label.setText(f"免费可用 {law_looks_text}/2 次")
+                self.law_looks_ticket_label.setText(
+                    f"引灵灯可用 {int(value.get('lawLooksTicketCount', 0))} 次"
+                )
+            if hasattr(self, "pet_kernel_remaining_label"):
+                pet_kernel_remaining = value.get("petKernelFreeRemaining")
+                pet_kernel_text = "--" if pet_kernel_remaining is None else str(int(pet_kernel_remaining))
+                self.pet_kernel_remaining_label.setText(f"免费可用 {pet_kernel_text}/2 次")
+                self.pet_kernel_item_label.setText(
+                    f"本源丹可用 {int(value.get('petKernelDrawItemCount', 0))} 次"
+                )
+            if hasattr(self, "universe_skill_remaining_label"):
+                universe_skill_remaining = value.get("universeSkillFreeRemaining")
+                universe_skill_text = "--" if universe_skill_remaining is None else str(int(universe_skill_remaining))
+                self.universe_skill_remaining_label.setText(f"免费可用 {universe_skill_text}/2 次")
+                self.universe_skill_item_label.setText(
+                    f"太虚元石可用 {int(value.get('universeSkillDrawItemCount', 0))} 次"
+                )
+                self.universe_stone_label.setText(
+                    f"造化石可用 {int(value.get('universeStoneCount', 0))} 次"
+                )
+            if hasattr(self, "magic_treasure_free_labels"):
+                treasure_pools = value.get("magicTreasurePools", {})
+                for pool_id in (1, 2, 3):
+                    pool = treasure_pools.get(str(pool_id), treasure_pools.get(pool_id, {}))
+                    free_remaining = pool.get("freeRemaining")
+                    free_text = "--" if free_remaining is None else str(int(free_remaining))
+                    self.magic_treasure_free_labels[pool_id].setText(f"{free_text}/2 次")
+                    self.magic_treasure_compass_labels[pool_id].setText(
+                        f"{int(pool.get('compassCount', 0))} 个"
+                    )
             self.account_meta.setText(
                 f"修为：{self.format_amount(value.get('cultivation', 0))}    "
                 f"妖力：{self.format_amount(value.get('power', 0))}"
@@ -940,6 +1762,10 @@ class XundaoWindow(FramelessWindow):
 
 
 def main() -> int:
+    global _FAULT_LOG
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _FAULT_LOG = (OUTPUT_DIR / "qt-fault.log").open("a", encoding="utf-8", buffering=1)
+    faulthandler.enable(_FAULT_LOG, all_threads=True)
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setFont(QFont(UI_FONT_FAMILY, 10))

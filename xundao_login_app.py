@@ -22,7 +22,7 @@ import websocket
 from PIL import Image, ImageTk
 
 from xundao_game_client import fetch_game_data
-from xundao_game_session import run_chop_tasks
+from xundao_game_session import run_chop_tasks, run_pupil_training
 from xundao_role_client import fetch_roles
 from xundao_qr_login import (
     BASE_URL,
@@ -98,6 +98,7 @@ class LoginApp(tk.Tk):
         self.current_role: dict[str, Any] | None = None
         self.log_text: scrolledtext.ScrolledText | None = None
         self.chop_enabled_var = tk.BooleanVar(value=True)
+        self.pupil_train_enabled_var = tk.BooleanVar(value=False)
         self.chop_settings = read_config()
         self._build_ui()
         self.after(100, self._drain_events)
@@ -202,10 +203,13 @@ class LoginApp(tk.Tk):
         self.log_text.configure(state="disabled")
 
     def _execute_selected_operations(self) -> None:
-        if not self.chop_enabled_var.get():
+        if not self.chop_enabled_var.get() and not self.pupil_train_enabled_var.get():
             self._append_log("未勾选任何操作。")
             return
-        self._confirm_chop_tree()
+        if self.pupil_train_enabled_var.get():
+            self._confirm_pupil_training(run_chop_after=self.chop_enabled_var.get())
+        else:
+            self._confirm_chop_tree()
 
     @staticmethod
     def _masked(value: Any, visible: int = 4) -> str:
@@ -445,6 +449,41 @@ class LoginApp(tk.Tk):
         tk.Label(form, text="保留品质", bg="#fbfdfc", fg="#4e5e63").grid(row=1, column=3, sticky="e", padx=(8, 10), pady=7)
         ttk.Spinbox(form, from_=1, to=45, textvariable=quality_var, width=11, style="Form.TSpinbox").grid(row=1, column=4, sticky="w", pady=7)
 
+        pupil_card = tk.Frame(workspace, bg="#fbfdfc", highlightbackground="#dce6e2", highlightthickness=1)
+        pupil_card.pack(fill="x", padx=16, pady=(0, 12))
+        pupil_title = tk.Frame(pupil_card, bg="#fbfdfc")
+        pupil_title.pack(fill="x", padx=14, pady=12)
+        pupil_mark = tk.Label(
+            pupil_title, width=2, bg="#ffffff", fg="#ffffff",
+            highlightbackground="#cfdad6", highlightthickness=1,
+            font=("Microsoft YaHei UI", 9, "bold"), cursor="hand2",
+        )
+        pupil_mark.pack(side="left")
+        pupil_text = tk.Label(
+            pupil_title, text="宗门 - 弟子修炼", bg="#fbfdfc", fg="#26353a",
+            font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2",
+        )
+        pupil_text.pack(side="left", padx=(6, 0))
+        tk.Label(
+            pupil_title, text="使用现有次数一键修炼，不购买次数、不自动出师",
+            bg="#fbfdfc", fg="#94a09d", font=("Microsoft YaHei UI", 8),
+        ).pack(side="left", padx=10)
+
+        def refresh_pupil_check() -> None:
+            enabled = self.pupil_train_enabled_var.get()
+            pupil_mark.configure(
+                text="✓" if enabled else "", bg="#2aa77a" if enabled else "#ffffff",
+                highlightthickness=0 if enabled else 1,
+            )
+
+        def toggle_pupil_check(_event: Any = None) -> None:
+            self.pupil_train_enabled_var.set(not self.pupil_train_enabled_var.get())
+            refresh_pupil_check()
+
+        for widget in (pupil_mark, pupil_text):
+            widget.bind("<Button-1>", toggle_pupil_check)
+        refresh_pupil_check()
+
         status_card = tk.Frame(workspace, bg="#fbfdfc", highlightbackground="#dce6e2", highlightthickness=1)
         status_card.pack(fill="x", padx=16, pady=(0, 12))
         tk.Label(status_card, text="任务状态", bg="#fbfdfc", fg="#27363b", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
@@ -600,6 +639,35 @@ class LoginApp(tk.Tk):
                 self.events.put(("chop_success", result))
             except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
                 self.events.put(("chop_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _confirm_pupil_training(self, run_chop_after: bool = False) -> None:
+        if not self.current_role:
+            return
+        role = self.current_role
+        extra = "\n修炼结束后继续执行砍树。" if run_chop_after else ""
+        confirmed = messagebox.askyesno(
+            "确认弟子修炼",
+            f"将在 {role.get('serverName')} / {role.get('nickName')} 使用现有次数执行一键修炼。\n"
+            f"不会购买次数，也不会自动出师。{extra}\n\n是否继续？",
+            parent=self,
+        )
+        if not confirmed:
+            return
+        self.chop_button.state(["disabled"])
+        self.role_status_var.set("正在执行弟子修炼...")
+        self._append_log(f"开始弟子修炼：{role.get('serverName')} / {role.get('nickName')}。")
+
+        def worker() -> None:
+            try:
+                result = run_pupil_training(
+                    int(role["serverId"]), OUTPUT_DIR,
+                    lambda message: self.events.put(("chop_log", message)),
+                )
+                self.events.put(("pupil_train_success", (result, run_chop_after)))
+            except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
+                self.events.put(("pupil_train_error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -871,6 +939,25 @@ class LoginApp(tk.Tk):
                     self.chop_button.state(["!disabled"])
                     self.role_status_var.set(f"砍树失败：{value}")
                     self._append_log(f"连接或请求失败：{value}")
+                elif event == "pupil_train_success":
+                    result, run_chop_after = value
+                    self.chop_button.state(["!disabled"])
+                    completed = result.get("completed", 0)
+                    reason = result.get("reason")
+                    if completed:
+                        self.role_status_var.set(f"弟子修炼结束，共完成 {completed} 轮。")
+                        self._append_log(
+                            f"弟子修炼结束：完成 {completed} 轮，停止原因 {reason}，服务端返回 {result.get('ret')}。"
+                        )
+                    else:
+                        self.role_status_var.set(f"弟子修炼未执行，服务端返回 {result.get('ret')}。")
+                        self._append_log(f"弟子修炼停止：{reason}，服务端返回 {result.get('ret')}。")
+                    if run_chop_after:
+                        self.after(100, self._confirm_chop_tree)
+                elif event == "pupil_train_error":
+                    self.chop_button.state(["!disabled"])
+                    self.role_status_var.set(f"弟子修炼失败：{value}")
+                    self._append_log(f"弟子修炼连接或请求失败：{value}")
                 elif event == "expired":
                     self.set_status("二维码已过期，请刷新")
                     self.refresh_button.state(["!disabled"])

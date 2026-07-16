@@ -27,14 +27,14 @@
       "new": false
     },
     {
-      "serverId": 4001683,
+      "serverId": 4001684,
       "labelName": "魑魅云",
-      "serverName": "魑魅云13服",
-      "address": "https://proxy-xddq-40.kvps85.com/s4001683_http",
+      "serverName": "魑魅云14服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4001684_http",
       "serverState": 1,
       "serverType": 0,
       "specialType": 0,
-      "openTime": 1784094060000,
+      "openTime": 1784131200000,
       "preRegisterTime": 0,
       "preRegisterFull": false,
       "new": true
@@ -78,7 +78,7 @@
   "activitySmallSceneSwitch": "1|9|10",
   "festivalSceneSwitch": "4",
   "timeZone": 8,
-  "serverTime": 1784130539507,
+  "serverTime": 1784195146220,
   "backendConfigMap": {
     "USER_AGREEMENT_TOGGLE_LIST": "-1",
     "ACTIVITY_SMALL_SCENE_SWITCH": "1|9|10",
