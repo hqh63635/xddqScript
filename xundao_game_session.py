@@ -18,6 +18,7 @@ HEADER = 29099
 HEADER_SIZE = 18
 PLAYER_LOGIN = 20001
 PLAYER_PING = 20003
+HEARTBEAT_INTERVAL_SECONDS = 5.0
 LOGIN_SYNC_OVER = 2
 CHOP_TREE = 20203
 CHOP_TREE_RESPONSE = 203
@@ -934,28 +935,58 @@ class GameSession:
         self._hero_rank_candidates: list[dict[str, Any]] | None = None
         self._hero_rank = 0
         self._last_ping = 0.0
+        self._send_lock = threading.Lock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
 
     def connect(self) -> None:
         self.socket = websocket.create_connection(
             self.ws_address, timeout=self.timeout, origin="https://www.wanyiwan.top", http_proxy_host=None
         )
         payload = protobuf_string(1, self.token) + protobuf_string(2, "zh_cn") + protobuf_int(3, 0)
-        self.socket.send_binary(make_frame(PLAYER_LOGIN, self.player_id, payload))
-        self.login_frames = self._collect_login_sync()
+        with self._send_lock:
+            self.socket.send_binary(make_frame(PLAYER_LOGIN, self.player_id, payload))
+        self._start_heartbeat()
+        try:
+            self.login_frames = self._collect_login_sync()
+        except Exception:
+            self.close()
+            raise
         self.observed_frames = list(self.login_frames)
         player_data = [payload for message_id, payload in self.login_frames if message_id == 201]
         if player_data:
             self.equipped_items = parse_equipped_items(player_data[-1])
             body_ids = _values(parse_protobuf(player_data[-1]), 6)
             self.god_body_id = int(body_ids[0]) if body_ids else 0
-        self._send_heartbeat(force=True)
+
+    def _start_heartbeat(self) -> None:
+        self._heartbeat_stop.set()
+        previous = self._heartbeat_thread
+        if previous is not None and previous.is_alive() and previous is not threading.current_thread():
+            previous.join(timeout=1)
+        self._heartbeat_stop = threading.Event()
+
+        def heartbeat_loop() -> None:
+            while not self._heartbeat_stop.wait(HEARTBEAT_INTERVAL_SECONDS):
+                try:
+                    self._send_heartbeat(force=True)
+                except (OSError, RuntimeError, websocket.WebSocketException):
+                    return
+
+        self._heartbeat_thread = threading.Thread(
+            target=heartbeat_loop, name="game-heartbeat", daemon=True,
+        )
+        self._heartbeat_thread.start()
 
     def _send_heartbeat(self, force: bool = False) -> None:
         if self.socket is None:
             raise RuntimeError("Game session is not connected")
         now = time.monotonic()
         if force or now - self._last_ping >= 5:
-            self.socket.send_binary(make_frame(PLAYER_PING, self.player_id))
+            with self._send_lock:
+                if self.socket is None:
+                    raise RuntimeError("Game session is not connected")
+                self.socket.send_binary(make_frame(PLAYER_PING, self.player_id))
             self._last_ping = now
 
     def _collect_login_sync(self, timeout_messages: int = 400) -> list[tuple[int, bytes]]:
@@ -993,7 +1024,10 @@ class GameSession:
             self.connect()
         assert self.socket is not None
         self._send_heartbeat()
-        self.socket.send_binary(make_frame(message_id, self.player_id, payload))
+        with self._send_lock:
+            if self.socket is None:
+                raise RuntimeError("Game session is not connected")
+            self.socket.send_binary(make_frame(message_id, self.player_id, payload))
         return self._wait_for(response_id)
 
     def get_pending_equipment(self) -> list[dict[str, Any]]:
@@ -1711,24 +1745,14 @@ class GameSession:
     def resource_snapshot(self, server_id: int, refresh_wild_boss: bool = False) -> dict[str, Any]:
         if refresh_wild_boss:
             self.wild_boss_remaining(refresh=True)
-        if not any(message_id == MAGIC_TREASURE_SYNC for message_id, _payload in self.observed_frames):
-            try:
-                self.magic_treasure_state(refresh=True)
-            except (RuntimeError, OSError, websocket.WebSocketException):
-                pass
-        if not any(message_id == PET_KERNEL_STATE_RESPONSE for message_id, _payload in self.observed_frames):
-            try:
-                self.pet_kernel_state(refresh=True)
-            except (RuntimeError, OSError, websocket.WebSocketException):
-                pass
-        if not any(message_id == UNIVERSE_STATE_RESPONSE for message_id, _payload in self.observed_frames):
-            try:
-                self.universe_state(refresh=True)
-            except (RuntimeError, OSError, websocket.WebSocketException):
-                pass
         return _snapshot_from_frames(server_id, self.observed_frames)
 
     def close(self) -> None:
+        self._heartbeat_stop.set()
+        heartbeat = self._heartbeat_thread
+        self._heartbeat_thread = None
+        if heartbeat is not None and heartbeat.is_alive() and heartbeat is not threading.current_thread():
+            heartbeat.join(timeout=1)
         if self.socket is not None:
             self.socket.close()
             self.socket = None

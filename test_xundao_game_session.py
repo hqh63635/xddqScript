@@ -1758,5 +1758,35 @@ class TreasureAuctionTests(unittest.TestCase):
         self.assertEqual(result["ret"], 0)
 
 
+class GameSessionHeartbeatTests(unittest.TestCase):
+    def test_background_heartbeat_runs_while_caller_is_blocked(self) -> None:
+        sent = []
+
+        class FakeSocket:
+            def send_binary(self, payload):
+                sent.append(game.parse_frame(payload)[0])
+
+            def close(self):
+                pass
+
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        session.socket = FakeSocket()  # type: ignore[assignment]
+        with patch.object(game, "HEARTBEAT_INTERVAL_SECONDS", 0.01):
+            session._start_heartbeat()
+            time.sleep(0.035)
+            session.close()
+
+        self.assertGreaterEqual(sent.count(game.PLAYER_PING), 2)
+
+    def test_resource_snapshot_does_not_issue_optional_feature_requests(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        session.observed_frames = []
+        session._request = lambda *_args, **_kwargs: self.fail("unexpected request")  # type: ignore[method-assign]
+
+        snapshot = session.resource_snapshot(42)
+
+        self.assertEqual(snapshot["serverId"], 42)
+
+
 if __name__ == "__main__":
     unittest.main()
