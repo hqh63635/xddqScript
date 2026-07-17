@@ -54,7 +54,7 @@ USING_FLUENT_WIDGETS = True
 try:
     from qfluentwidgets import (
         CheckBox, ComboBox, DoubleSpinBox, FluentIcon as FIF, LineEdit, PasswordLineEdit,
-        PrimaryPushButton, PushButton, SpinBox, Theme, ToolButton, setTheme,
+        PrimaryPushButton, PushButton, SpinBox, Theme, TimePicker, ToolButton, setTheme,
     )
 except ModuleNotFoundError:
     USING_FLUENT_WIDGETS = False
@@ -64,6 +64,14 @@ except ModuleNotFoundError:
     LineEdit = QLineEdit
     SpinBox = QSpinBox
     ToolButton = QToolButton
+
+    class TimePicker(QTimeEdit):
+        def __init__(self, parent: QWidget | None = None, showSeconds: bool = False) -> None:
+            super().__init__(parent)
+            self.setDisplayFormat("HH:mm:ss" if showSeconds else "HH:mm")
+
+        def getTime(self) -> QTime:
+            return self.time()
 
     class Theme:
         LIGHT = "light"
@@ -480,12 +488,11 @@ class XundaoWindow(FramelessWindow):
         self.schedule_enabled = CheckBox("启用每日定时执行")
         self.schedule_enabled.setChecked(str(config.get("scheduleEnabled", "false")).lower() == "true")
         self.schedule_enabled.toggled.connect(self._schedule_settings_changed)
-        self.schedule_time = QTimeEdit()
-        self.schedule_time.setDisplayFormat("HH:mm:ss")
+        self.schedule_time = TimePicker(showSeconds=True)
         parsed_time = QTime.fromString(str(config.get("scheduleTime", "00:00:01")), "HH:mm:ss")
         self.schedule_time.setTime(parsed_time if parsed_time.isValid() else QTime(0, 0, 1))
         self.schedule_time.timeChanged.connect(self._schedule_settings_changed)
-        self.schedule_time.setFixedWidth(130)
+        self.schedule_time.setFixedWidth(210)
         self.schedule_status_label = QLabel(); self.schedule_status_label.setObjectName("statusGood")
         self.next_schedule_label = QLabel(); self.next_schedule_label.setObjectName("muted")
         form.addWidget(self.schedule_enabled, 0, 0, 1, 2)
@@ -1276,7 +1283,7 @@ class XundaoWindow(FramelessWindow):
 
     def _configured_schedule_time(self) -> QTime:
         if hasattr(self, "schedule_time"):
-            return self.schedule_time.time()
+            return self.schedule_time.getTime()
         value = str(read_config().get("scheduleTime", "00:00:01"))
         parsed = QTime.fromString(value, "HH:mm:ss")
         return parsed if parsed.isValid() else QTime(0, 0, 1)
@@ -1306,7 +1313,7 @@ class XundaoWindow(FramelessWindow):
     def _schedule_settings_changed(self, *_: object) -> None:
         enabled = self.schedule_enabled.isChecked()
         self._schedule_enabled = enabled
-        schedule_time = self.schedule_time.time().toString("HH:mm:ss")
+        schedule_time = self.schedule_time.getTime().toString("HH:mm:ss")
         update_config(scheduleEnabled=enabled, scheduleTime=schedule_time)
         self._reset_next_scheduled_run()
         self._update_schedule_summary()
