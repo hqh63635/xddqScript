@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -20,13 +21,13 @@ import qrcode
 import requests
 import websocket
 from PIL import Image
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QTime, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
     QVBoxLayout, QWidget, QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit, QSpinBox,
-    QToolButton,
+    QToolButton, QTimeEdit, QTabWidget,
 )
 try:
     from qframelesswindow import FramelessWindow, TitleBar
@@ -178,6 +179,7 @@ def read_config() -> dict[str, str]:
         "autoHeroRank": "false", "heroRankCount": "10",
         "autoDestinyTravel": "false", "destinyTravelCount": "10",
         "autoProfessionQuick": "false", "autoProfessionChallenge": "false",
+        "scheduleEnabled": "false", "scheduleTime": "00:00:01",
         "professionChallengeCount": "30",
         "autoYardDaily": "false", "autoYardDraw": "false", "yardDrawCount": "1",
         "autoHomeland": "false", "homelandPreferredItem": "100004", "homelandPreferredLevel": "3",
@@ -253,6 +255,10 @@ class AppTitleBar(TitleBar):
             self.hBoxLayout.takeAt(0)
         self.hBoxLayout.addWidget(brand)
         self.hBoxLayout.addStretch(1)
+        self.clock_label = QLabel(self)
+        self.clock_label.setStyleSheet("color:#69787d;font-size:11px;")
+        self.hBoxLayout.addWidget(self.clock_label)
+        self.hBoxLayout.addSpacing(18)
         self.hBoxLayout.addWidget(self.minBtn)
         self.hBoxLayout.addWidget(self.maxBtn)
         self.hBoxLayout.addWidget(self.closeBtn)
@@ -329,6 +335,15 @@ class XundaoWindow(FramelessWindow):
         self.runtime_timer = QTimer(self)
         self.runtime_timer.setInterval(1000)
         self.runtime_timer.timeout.connect(self._update_runtime)
+        self._scheduled_run_pending = False
+        self._schedule_enabled = str(read_config().get("scheduleEnabled", "false")).lower() == "true"
+        self._next_scheduled_run: datetime | None = None
+        self.scheduler_timer = QTimer(self)
+        self.scheduler_timer.setInterval(500)
+        self.scheduler_timer.timeout.connect(self._scheduler_tick)
+        self._reset_next_scheduled_run()
+        self.scheduler_timer.start()
+        self._update_clock_display()
         self.event.connect(self._handle_event)
         self.stack = QStackedWidget(self)
         self.stack.setContentsMargins(0, 0, 0, 0)
@@ -386,7 +401,7 @@ class XundaoWindow(FramelessWindow):
             #resourceOrange { background: #fff5e9; color: #e99a32; border-radius: 23px; font-weight: 700; }
             #sectionTitle { font-size: 15px; font-weight: 600; }
             #taskGroupTitle { color: #52636a; font-size: 12px; font-weight: 600; padding-bottom: 3px; }
-            #roleName { font-size: 22px; font-weight: 700; color: #17272c; }
+            #roleName { font-size: 18px; font-weight: 700; color: #17272c; }
             #muted { color: #859398; }
             #statusGood { color: #25a66f; font-weight: 600; }
             QPlainTextEdit { background: #fbfcfc; border: 1px solid #edf1ef; border-radius: 5px; padding: 10px; }
@@ -397,6 +412,10 @@ class XundaoWindow(FramelessWindow):
             #settingsScroll QScrollBar::handle:vertical:hover { background: #859690; }
             #settingsScroll QScrollBar::add-line:vertical, #settingsScroll QScrollBar::sub-line:vertical { height: 0; }
             #settingsScroll QScrollBar::add-page:vertical, #settingsScroll QScrollBar::sub-page:vertical { background: transparent; }
+            QTabWidget::pane { border: 0; background: transparent; top: -1px; }
+            QTabBar::tab { background: transparent; color: #718086; padding: 10px 24px; border: 0; }
+            QTabBar::tab:selected { color: #259d74; font-weight: 600; border-bottom: 2px solid #28a779; }
+            QTabBar::tab:hover:!selected { color: #405158; background: #f0f5f3; }
         """)
 
     def _build_login_page(self) -> QWidget:
@@ -434,20 +453,90 @@ class XundaoWindow(FramelessWindow):
         outer = QVBoxLayout(page); set_margins(outer, 0, 0, 0, 0); outer.setSpacing(0)
         content = QVBoxLayout(); set_margins(content, 18, 14, 18, 14); content.setSpacing(14)
         content.addWidget(self._profile_card())
-        main = QHBoxLayout(); main.setSpacing(14)
+        tabs = QTabWidget(); tabs.setDocumentMode(True)
+        task_page = QWidget()
+        main = QHBoxLayout(task_page); set_margins(main, 0, 10, 0, 0); main.setSpacing(14)
         main.addWidget(self._settings_panel(config), 3)
         main.addWidget(self._log_panel(), 2)
-        content.addLayout(main, 1)
+        tabs.addTab(task_page, "任务")
+        tabs.addTab(self._schedule_page(config), "定时")
+        tabs.addTab(self._app_settings_page(), "设置")
+        content.addWidget(tabs, 1)
         holder = QWidget(); holder.setLayout(content); outer.addWidget(holder, 1)
         outer.addWidget(self._footer())
         return page
 
+    def _schedule_page(self, config: dict[str, str]) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page); set_margins(layout, 0, 10, 0, 0); layout.setSpacing(0)
+        panel = Card()
+        panel_layout = QVBoxLayout(panel); set_margins(panel_layout, 16, 14, 16, 16); panel_layout.setSpacing(12)
+        title = QLabel("◷  定时设置"); title.setObjectName("sectionTitle")
+        panel_layout.addWidget(title)
+
+        settings = Card(object_name="softCard")
+        form = QGridLayout(settings); set_margins(form, 16, 14, 16, 16)
+        form.setHorizontalSpacing(24); form.setVerticalSpacing(18)
+        self.schedule_enabled = CheckBox("启用每日定时执行")
+        self.schedule_enabled.setChecked(str(config.get("scheduleEnabled", "false")).lower() == "true")
+        self.schedule_enabled.toggled.connect(self._schedule_settings_changed)
+        self.schedule_time = QTimeEdit()
+        self.schedule_time.setDisplayFormat("HH:mm:ss")
+        parsed_time = QTime.fromString(str(config.get("scheduleTime", "00:00:01")), "HH:mm:ss")
+        self.schedule_time.setTime(parsed_time if parsed_time.isValid() else QTime(0, 0, 1))
+        self.schedule_time.timeChanged.connect(self._schedule_settings_changed)
+        self.schedule_time.setFixedWidth(130)
+        self.schedule_status_label = QLabel(); self.schedule_status_label.setObjectName("statusGood")
+        self.next_schedule_label = QLabel(); self.next_schedule_label.setObjectName("muted")
+        form.addWidget(self.schedule_enabled, 0, 0, 1, 2)
+        form.addWidget(QLabel("执行时间"), 1, 0)
+        form.addWidget(self.schedule_time, 1, 1)
+        form.addWidget(QLabel("调度状态"), 2, 0)
+        form.addWidget(self.schedule_status_label, 2, 1)
+        form.addWidget(QLabel("下次执行"), 3, 0)
+        form.addWidget(self.next_schedule_label, 3, 1)
+        form.setColumnStretch(2, 1)
+        panel_layout.addWidget(settings)
+        panel_layout.addStretch(1)
+        layout.addWidget(panel)
+        self._update_schedule_summary()
+        return page
+
+    def _app_settings_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page); set_margins(layout, 0, 10, 0, 0); layout.setSpacing(0)
+        panel = Card()
+        panel_layout = QVBoxLayout(panel); set_margins(panel_layout, 16, 14, 16, 16); panel_layout.setSpacing(12)
+        title = QLabel("⚙  应用设置"); title.setObjectName("sectionTitle")
+        panel_layout.addWidget(title)
+
+        settings = Card(object_name="softCard")
+        actions = QGridLayout(settings); set_margins(actions, 16, 14, 16, 16)
+        actions.setHorizontalSpacing(14); actions.setVerticalSpacing(14)
+        advanced = PushButton(FIF.SETTING, "高级设置")
+        advanced.clicked.connect(self.open_settings)
+        config = PushButton(FIF.SETTING, "配置管理")
+        config.clicked.connect(self.open_settings)
+        import_button = PushButton(FIF.DOWNLOAD, "导入配置")
+        import_button.clicked.connect(lambda: self.append_log("导入配置功能暂未开放。"))
+        export_button = PushButton(FIF.SAVE_AS, "导出配置")
+        export_button.clicked.connect(lambda: self.append_log("导出配置功能暂未开放。"))
+        actions.addWidget(advanced, 0, 0)
+        actions.addWidget(config, 0, 1)
+        actions.addWidget(import_button, 1, 0)
+        actions.addWidget(export_button, 1, 1)
+        actions.setColumnStretch(2, 1)
+        panel_layout.addWidget(settings)
+        panel_layout.addStretch(1)
+        layout.addWidget(panel)
+        return page
+
     def _profile_card(self) -> QFrame:
-        card = Card(); card.setFixedHeight(142)
-        layout = QHBoxLayout(card); set_margins(layout, 22, 15, 0, 15); layout.setSpacing(18)
-        avatar = QLabel("道"); avatar.setAlignment(Qt.AlignmentFlag.AlignCenter); avatar.setFixedSize(88, 88)
-        avatar.setStyleSheet("background:#e9f7f1;color:#239d73;border:2px solid #b9dfd1;border-radius:44px;font-size:30px;font-weight:700;")
-        identity = QVBoxLayout(); identity.setSpacing(6)
+        card = Card(); card.setFixedHeight(104)
+        layout = QHBoxLayout(card); set_margins(layout, 18, 8, 0, 8); layout.setSpacing(14)
+        avatar = QLabel("道"); avatar.setAlignment(Qt.AlignmentFlag.AlignCenter); avatar.setFixedSize(66, 66)
+        avatar.setStyleSheet("background:#e9f7f1;color:#239d73;border:2px solid #b9dfd1;border-radius:33px;font-size:24px;font-weight:700;")
+        identity = QVBoxLayout(); identity.setSpacing(3)
         self.role_name = QLabel("暂无角色"); self.role_name.setObjectName("roleName")
         self.role_meta = QLabel("角色信息尚未加载"); self.role_meta.setObjectName("muted")
         account = "--"
@@ -459,7 +548,7 @@ class XundaoWindow(FramelessWindow):
                 pass
         self.account_meta = QLabel(f"账号：{account}    共 {len(self.roles)} 个角色"); self.account_meta.setObjectName("muted")
         identity.addWidget(self.role_name); identity.addWidget(self.role_meta); identity.addWidget(self.account_meta); identity.addStretch()
-        selector = QGridLayout(); selector.setHorizontalSpacing(10); selector.setVerticalSpacing(10)
+        selector = QGridLayout(); selector.setHorizontalSpacing(10); selector.setVerticalSpacing(4)
         selector.addWidget(QLabel("区服 / 角色"), 0, 0)
         self.role_combo = ComboBox(); self.role_combo.setMinimumWidth(280)
         self.role_combo.addItems([f"{r.get('serverName', '-')}  |  {r.get('nickName', '-')}" for r in self.roles])
@@ -468,14 +557,13 @@ class XundaoWindow(FramelessWindow):
         layout.addWidget(avatar); layout.addLayout(identity, 2); layout.addLayout(selector, 2)
         layout.addStretch()
         self.resource_values: dict[str, QLabel] = {}
-        for label, value, object_name in (("灵石", "--", "resourceGreen"), ("仙玉", "--", "resourceBlue"), ("妖力", "--", "resourceOrange"), ("境界", "--", "resourceGreen")):
-            box = QVBoxLayout(); box.setSpacing(3)
-            icon = QLabel(label[0]); icon.setObjectName(object_name); icon.setAlignment(Qt.AlignmentFlag.AlignCenter); icon.setFixedSize(46, 46)
+        for label, value in (("灵石", "--"), ("仙玉", "--"), ("妖力", "--"), ("境界", "--")):
+            box = QVBoxLayout(); box.setSpacing(4)
             name = QLabel(label); name.setAlignment(Qt.AlignmentFlag.AlignCenter); name.setStyleSheet(f"color:{'#25a474' if label == '灵石' else '#3094cf' if label == '仙玉' else '#e99a32'};")
-            amount = QLabel(value); amount.setAlignment(Qt.AlignmentFlag.AlignCenter); amount.setStyleSheet("font-size:16px;font-weight:700;")
+            amount = QLabel(value); amount.setAlignment(Qt.AlignmentFlag.AlignCenter); amount.setStyleSheet("font-size:14px;font-weight:700;")
             self.resource_values[label] = amount
-            box.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter); box.addWidget(name); box.addWidget(amount)
-            wrap = QWidget(); wrap.setMinimumWidth(135); wrap.setLayout(box); layout.addWidget(wrap)
+            box.addStretch(1); box.addWidget(name); box.addWidget(amount); box.addStretch(1)
+            wrap = QWidget(); wrap.setMinimumWidth(118); wrap.setLayout(box); layout.addWidget(wrap)
         return card
 
     def _navigation(self) -> QFrame:
@@ -508,9 +596,7 @@ class XundaoWindow(FramelessWindow):
         head = QHBoxLayout(); title = QLabel("⚙  功能设置"); title.setObjectName("sectionTitle")
         self.select_all_tasks = CheckBox("全选")
         self.select_all_tasks.clicked.connect(self._set_all_tasks)
-        advanced = PushButton(FIF.SETTING, "高级设置"); advanced.clicked.connect(self.open_settings)
-        head.addWidget(title); head.addStretch(); head.addWidget(self.select_all_tasks); head.addSpacing(10)
-        head.addWidget(advanced); layout.addLayout(head)
+        head.addWidget(title); head.addStretch(); head.addWidget(self.select_all_tasks); layout.addLayout(head)
 
         scroll = QScrollArea(); scroll.setObjectName("settingsScroll")
         scroll.setWidgetResizable(True)
@@ -1168,9 +1254,6 @@ class XundaoWindow(FramelessWindow):
     def _footer(self) -> QFrame:
         footer = Card(object_name="footer"); footer.setFixedHeight(64)
         layout = QHBoxLayout(footer); set_margins(layout, 20, 0, 20, 0); layout.setSpacing(10)
-        config = PushButton(FIF.SETTING, "配置管理"); config.clicked.connect(self.open_settings)
-        import_button = PushButton(FIF.DOWNLOAD, "导入配置"); import_button.clicked.connect(lambda: self.append_log("导入配置功能暂未开放。"))
-        export_button = PushButton(FIF.SAVE_AS, "导出配置"); export_button.clicked.connect(lambda: self.append_log("导出配置功能暂未开放。"))
         self.start_button = PrimaryPushButton(FIF.PLAY, "启动脚本"); self.start_button.clicked.connect(self.start_chop)
         pause = PushButton(FIF.PAUSE, "暂停"); pause.clicked.connect(lambda: self.append_log("当前任务暂不支持暂停。"))
         self.stop_button = PushButton(FIF.CANCEL, "停止"); self.stop_button.clicked.connect(self.stop_chop)
@@ -1180,13 +1263,85 @@ class XundaoWindow(FramelessWindow):
         self.relogin_button.hide()
         self.connection_status = QLabel("●  等待连接"); self.connection_status.setObjectName("statusGood")
         self.runtime_label = QLabel("运行时长：00:00:00"); self.runtime_label.setObjectName("muted")
-        layout.addWidget(config); layout.addWidget(import_button); layout.addWidget(export_button)
         layout.addStretch(1)
         layout.addWidget(self.start_button); layout.addWidget(pause); layout.addWidget(self.stop_button)
         layout.addStretch(1)
         layout.addWidget(self.connection_status); layout.addWidget(self.relogin_button)
-        layout.addSpacing(24); layout.addWidget(self.runtime_label)
+        layout.addSpacing(18); layout.addWidget(self.runtime_label)
+        self._update_clock_display()
         return footer
+
+    def _configured_schedule_time(self) -> QTime:
+        if hasattr(self, "schedule_time"):
+            return self.schedule_time.time()
+        value = str(read_config().get("scheduleTime", "00:00:01"))
+        parsed = QTime.fromString(value, "HH:mm:ss")
+        return parsed if parsed.isValid() else QTime(0, 0, 1)
+
+    def _reset_next_scheduled_run(self) -> None:
+        now = datetime.now()
+        scheduled = self._configured_schedule_time()
+        candidate = now.replace(
+            hour=scheduled.hour(), minute=scheduled.minute(), second=scheduled.second(), microsecond=0,
+        )
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        self._next_scheduled_run = candidate
+
+    def _update_schedule_summary(self) -> None:
+        if not hasattr(self, "schedule_status_label"):
+            return
+        enabled = self._schedule_enabled
+        self.schedule_status_label.setText("已启用" if enabled else "未启用")
+        self.schedule_status_label.setStyleSheet(
+            "color:#25a66f;font-weight:600;" if enabled else "color:#8a989d;font-weight:600;"
+        )
+        self.next_schedule_label.setText(
+            f"{self._next_scheduled_run:%Y-%m-%d %H:%M:%S}" if enabled and self._next_scheduled_run else "--"
+        )
+
+    def _schedule_settings_changed(self, *_: object) -> None:
+        enabled = self.schedule_enabled.isChecked()
+        self._schedule_enabled = enabled
+        schedule_time = self.schedule_time.time().toString("HH:mm:ss")
+        update_config(scheduleEnabled=enabled, scheduleTime=schedule_time)
+        self._reset_next_scheduled_run()
+        self._update_schedule_summary()
+        self.append_log(
+            f"每日定时任务已{'启用' if enabled else '关闭'}"
+            + (f"，下次执行时间 {self._next_scheduled_run:%Y-%m-%d %H:%M:%S}。" if enabled else "。")
+        )
+
+    def _update_clock_display(self) -> None:
+        if hasattr(self.app_title_bar, "clock_label"):
+            self.app_title_bar.clock_label.setText(f"当前时间 {datetime.now():%Y-%m-%d %H:%M:%S}")
+
+    def _scheduler_tick(self) -> None:
+        self._update_clock_display()
+        if not self._schedule_enabled:
+            return
+        now = datetime.now()
+        if self._next_scheduled_run is None:
+            self._reset_next_scheduled_run()
+        if self._next_scheduled_run is None or now < self._next_scheduled_run:
+            return
+        scheduled_for = self._next_scheduled_run
+        self._next_scheduled_run += timedelta(days=1)
+        self._update_schedule_summary()
+        self._run_scheduled_tasks(scheduled_for)
+
+    def _run_scheduled_tasks(self, scheduled_for: datetime) -> None:
+        if hasattr(self, "start_button") and not self.start_button.isEnabled():
+            self.append_log(f"定时任务 {scheduled_for:%H:%M:%S} 已跳过：当前任务仍在运行。")
+            return
+        self._scheduled_run_pending = True
+        if self.game_connected and self.current_role:
+            self.append_log(f"定时任务 {scheduled_for:%H:%M:%S} 开始执行当前已选任务。")
+            self._scheduled_run_pending = False
+            self.start_chop()
+            return
+        self.login_status.setText("定时任务正在使用已保存 token 登录…")
+        self.restore_session()
 
     def _update_runtime(self) -> None:
         elapsed = self.runtime_seconds
@@ -1272,6 +1427,10 @@ class XundaoWindow(FramelessWindow):
             self.role_combo.blockSignals(False)
             self._select_role(index)
         self.append_log("登录状态有效，角色数据加载完成。")
+        if self._scheduled_run_pending and self.current_role:
+            self._scheduled_run_pending = False
+            self.append_log("token 登录成功，开始执行当前已选任务。")
+            QTimer.singleShot(0, self.start_chop)
 
     def append_log(self, message: str) -> None:
         if not hasattr(self, "log_text"): return

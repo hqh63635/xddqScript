@@ -3,6 +3,8 @@
   "ctoken": "",
   "sessionToken": "",
   "selectedServerId": "",
+  "scheduleEnabled": "false",
+  "scheduleTime": "00:00:01",
   "chopCount": "unlimited",
   "chopInterval": "2.0",
   "equipmentAction": "stop",
