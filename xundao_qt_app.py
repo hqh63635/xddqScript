@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import base64
 import faulthandler
+import gc
 import json
 import sys
 import threading
@@ -112,8 +113,10 @@ from xundao_game_session import (
     DESTINY_TRAVEL_COUNT_MAX,
     HOMELAND_RESOURCE_NAMES,
     PROFESSION_CHALLENGE_DAILY_MAX,
+    claim_role_mail_rewards,
     fetch_role_snapshot,
     run_chop_tasks,
+    run_cave_trial_tasks,
     run_adventure_tasks,
     run_destiny_travel_tasks,
     run_divine_mind_collection_tasks,
@@ -127,6 +130,8 @@ from xundao_game_session import (
     run_profession_challenge_tasks,
     run_profession_quick_task,
     run_pupil_training_tasks,
+    run_rule_trial_tasks,
+    run_sky_war_tasks,
     run_star_trial_tasks,
     run_spirit_draw_tasks,
     run_talent_tasks,
@@ -179,6 +184,13 @@ def read_config() -> dict[str, str]:
         "autoTalent": "false", "talentDrawCount": "3", "talentTotalCount": "unlimited",
         "talentDrawInterval": "2.0",
         "talentMinimumQuality": "5", "talentPreferredAttribute": "5",
+        "autoTower": "false", "towerChallengeCount": "10", "towerUsePreference": "true",
+        "towerContinueOnFailure": "true",
+        "autoAdventure": "false", "adventureCount": "unlimited",
+        "adventureContinueOnFailure": "true",
+        "autoSkyWar": "false",
+        "autoCaveTrial": "false", "caveTrialCount": "1",
+        "autoRuleTrial": "false",
         "autoMagicDraw": "false", "magicDrawCount": "2", "magicPaidDrawCount": "0",
         "autoSpiritDraw": "false", "spiritDrawCount": "2", "spiritPaidDrawCount": "0",
         "autoMagicTreasure": "false",
@@ -247,9 +259,13 @@ class AppTitleBar(TitleBar):
         self.hBoxLayout.setContentsMargins(0, 0, 0, 0)
         self.hBoxLayout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-    def set_connected(self, connected: bool) -> None:
+    def set_connected(self, connected: bool, text: str | None = None) -> None:
         if hasattr(self.parent(), "connection_status"):
-            self.parent().connection_status.setText("●  已连接游戏" if connected else "●  等待连接")
+            status = self.parent().connection_status
+            status.setText(text or ("●  已连接游戏" if connected else "●  等待连接"))
+            status.setStyleSheet(
+                "color:#25a66f;font-weight:600;" if connected else "color:#8a989d;font-weight:600;"
+            )
 
 
 class SettingsDialog(QDialog):
@@ -302,9 +318,12 @@ class XundaoWindow(FramelessWindow):
         self.roles: list[dict[str, Any]] = []
         self.current_role: dict[str, Any] | None = None
         self.login_path: Path | None = None
+        self.game_connected = False
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.chop_stop_event = threading.Event()
+        self._profile_refresh_requested = threading.Event()
+        self._profile_refresh_lock = threading.Lock()
         self.runtime_seconds = 0.0
         self.runtime_started_at: float | None = None
         self.runtime_timer = QTimer(self)
@@ -331,6 +350,18 @@ class XundaoWindow(FramelessWindow):
             value = {"path": str(path), "roles": roles}
         payload = json.dumps(value, ensure_ascii=False)
         self.event.emit(event, payload)
+
+    @staticmethod
+    def _is_disconnect_error(exc: BaseException) -> bool:
+        if isinstance(exc, (TimeoutError, websocket.WebSocketTimeoutException)):
+            return False
+        if isinstance(exc, websocket.WebSocketConnectionClosedException):
+            return True
+        if isinstance(exc, OSError):
+            return getattr(exc, "winerror", None) in (10053, 10054, 10057) or getattr(exc, "errno", None) in (
+                32, 54, 57, 104, 107,
+            )
+        return "not connected" in str(exc).lower() or "connection is already closed" in str(exc).lower()
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -536,7 +567,7 @@ class XundaoWindow(FramelessWindow):
         self.pupil_training_rounds = SpinBox()
         self.pupil_training_rounds.setRange(1, 100)
         self.pupil_training_rounds.setValue(int(config.get("pupilTrainingRounds", "100")))
-        pupil_hint = QLabel("仅使用现有次数，不购买次数、不自动出师")
+        pupil_hint = QLabel("自动领取广告免费及本次免费；随后使用现有修炼次数")
         pupil_hint.setObjectName("muted")
         pupil_layout.addWidget(self.pupil_training_enabled)
         pupil_layout.addSpacing(12)
@@ -631,11 +662,13 @@ class XundaoWindow(FramelessWindow):
         yard_daily_desc.setObjectName("muted")
         yard_layout.addWidget(self.yard_daily_enabled, 1, 0)
         yard_layout.addWidget(yard_daily_desc, 1, 1, 1, 3)
-        self.yard_draw_enabled, self.yard_draw_count, self.yard_draw_remaining_label = self._add_limited_task_row(
-            yard_layout, 2, "仙居造物", 100,
-            config.get("autoYardDraw", "false"), config.get("yardDrawCount", "1"),
-            "优先使用普通免费及 2 次广告免费",
-        )
+        self.yard_draw_enabled = CheckBox("仙居造物")
+        self.yard_draw_enabled.setChecked(config.get("autoYardDraw", "false").lower() == "true")
+        self.yard_draw_count = ComboBox(); self.yard_draw_count.addItem("自动")
+        self.yard_draw_remaining_label = QLabel("广告免费 / 本次免费：自动获取")
+        self.yard_draw_remaining_label.setObjectName("muted")
+        yard_layout.addWidget(self.yard_draw_enabled, 2, 0)
+        yard_layout.addWidget(self.yard_draw_remaining_label, 2, 1, 1, 3)
         content_layout.addWidget(yard_task)
 
         homeland_task = Card(object_name="softCard")
@@ -688,21 +721,21 @@ class XundaoWindow(FramelessWindow):
             saved_talent_count = 3
         self.talent_draw_count.setValue(max(1, min(5, saved_talent_count)))
         self.talent_total_count = ComboBox()
-        self.talent_total_count.addItems(["无限次"] + [f"{value} 次" for value in range(1, 1001)])
+        self.talent_total_count.addItems(["无限次"] + [f"{value} 次" for value in range(1, 101)])
         saved_talent_total = config.get("talentTotalCount", "unlimited")
         try:
             talent_total_index = 0 if saved_talent_total == "unlimited" else int(saved_talent_total)
         except (TypeError, ValueError):
             talent_total_index = 0
-        self.talent_total_count.setCurrentIndex(max(0, min(1000, talent_total_index)))
+        self.talent_total_count.setCurrentIndex(max(0, min(100, talent_total_index)))
         self.talent_draw_interval = DoubleSpinBox()
-        self.talent_draw_interval.setRange(0.5, 60.0)
+        self.talent_draw_interval.setRange(2.0, 60.0)
         self.talent_draw_interval.setSingleStep(0.5)
         try:
             saved_talent_interval = float(config.get("talentDrawInterval", "2.0"))
         except (TypeError, ValueError):
             saved_talent_interval = 2.0
-        self.talent_draw_interval.setValue(max(0.5, min(60.0, saved_talent_interval)))
+        self.talent_draw_interval.setValue(max(2.0, min(60.0, saved_talent_interval)))
         self.talent_quality = ComboBox()
         self.talent_quality.addItems([f"{quality} 级" for quality in range(1, 11)])
         try:
@@ -753,14 +786,17 @@ class XundaoWindow(FramelessWindow):
         self.tower_count.setCurrentIndex(max(0, min(100, saved_tower_count)))
         self.tower_preference_enabled = CheckBox("启用加成偏好")
         self.tower_preference_enabled.setChecked(config.get("towerUsePreference", "true").lower() == "true")
+        self.tower_continue_on_failure = CheckBox("失败继续挑战")
+        self.tower_continue_on_failure.setChecked(config.get("towerContinueOnFailure", "true").lower() == "true")
         self.tower_remaining_label = QLabel("当前关卡 -- / 最高 --"); self.tower_remaining_label.setObjectName("muted")
         tower_hint = QLabel("偏好：最终增伤、最终减伤、强化灵兽、弱化灵兽、弱化治疗")
         tower_hint.setObjectName("muted")
         tower_layout.addWidget(self.tower_enabled, 0, 0)
         tower_layout.addWidget(QLabel("继续挑战"), 0, 1); tower_layout.addWidget(self.tower_count, 0, 2)
         tower_layout.addWidget(self.tower_preference_enabled, 0, 3)
-        tower_layout.addWidget(self.tower_remaining_label, 0, 4)
-        tower_layout.addWidget(tower_hint, 1, 1, 1, 4); tower_layout.setColumnStretch(5, 1)
+        tower_layout.addWidget(self.tower_continue_on_failure, 0, 4)
+        tower_layout.addWidget(self.tower_remaining_label, 0, 5)
+        tower_layout.addWidget(tower_hint, 1, 1, 1, 5); tower_layout.setColumnStretch(6, 1)
         content_layout.addWidget(tower_task)
 
         adventure_task = Card(object_name="softCard")
@@ -769,18 +805,72 @@ class XundaoWindow(FramelessWindow):
         self.adventure_enabled = CheckBox("冒险")
         self.adventure_enabled.setChecked(config.get("autoAdventure", "false").lower() == "true")
         self.adventure_count = ComboBox()
-        self.adventure_count.addItems(["无限次"] + [f"{value} 次" for value in range(1, 1001)])
+        self.adventure_count.addItems(["无限次"] + [f"{value} 次" for value in range(1, 101)])
         saved_adventure_count = config.get("adventureCount", "unlimited")
         try:
             adventure_count_index = 0 if saved_adventure_count == "unlimited" else int(saved_adventure_count)
         except (TypeError, ValueError):
             adventure_count_index = 0
-        self.adventure_count.setCurrentIndex(max(0, min(1000, adventure_count_index)))
+        self.adventure_count.setCurrentIndex(max(0, min(100, adventure_count_index)))
+        self.adventure_continue_on_failure = CheckBox("失败继续挑战")
+        self.adventure_continue_on_failure.setChecked(config.get("adventureContinueOnFailure", "true").lower() == "true")
         self.adventure_stage_label = QLabel("当前关卡 --"); self.adventure_stage_label.setObjectName("muted")
         adventure_layout.addWidget(self.adventure_enabled, 0, 0)
         adventure_layout.addWidget(QLabel("挑战次数"), 0, 1); adventure_layout.addWidget(self.adventure_count, 0, 2)
-        adventure_layout.addWidget(self.adventure_stage_label, 0, 3); adventure_layout.setColumnStretch(4, 1)
+        adventure_layout.addWidget(self.adventure_continue_on_failure, 0, 3)
+        adventure_layout.addWidget(self.adventure_stage_label, 0, 4); adventure_layout.setColumnStretch(5, 1)
         content_layout.addWidget(adventure_task)
+
+        sky_war_task = Card(object_name="softCard")
+        sky_war_layout = QGridLayout(sky_war_task); set_margins(sky_war_layout, 16, 12, 16, 12)
+        sky_war_layout.setHorizontalSpacing(12)
+        self.sky_war_enabled = CheckBox("征战诸天")
+        self.sky_war_enabled.setChecked(config.get("autoSkyWar", "false").lower() == "true")
+        self.sky_war_remaining_label = QLabel("今日剩余 --/5 次")
+        self.sky_war_remaining_label.setObjectName("muted")
+        sky_war_hint = QLabel("使用免费次数挑战任意对手，胜负均计数，完成后领取任务奖励")
+        sky_war_hint.setObjectName("muted")
+        sky_war_layout.addWidget(self.sky_war_enabled, 0, 0)
+        sky_war_layout.addWidget(self.sky_war_remaining_label, 0, 1)
+        sky_war_layout.addWidget(sky_war_hint, 0, 2)
+        sky_war_layout.setColumnStretch(3, 1)
+        content_layout.addWidget(sky_war_task)
+
+        cave_trial_task = Card(object_name="softCard")
+        cave_trial_layout = QGridLayout(cave_trial_task); set_margins(cave_trial_layout, 16, 12, 16, 12)
+        cave_trial_layout.setHorizontalSpacing(12)
+        self.cave_trial_enabled = CheckBox("元辰试炼")
+        self.cave_trial_enabled.setChecked(config.get("autoCaveTrial", "false").lower() == "true")
+        self.cave_trial_count = ComboBox()
+        self.cave_trial_count.addItems([f"{value} 次" for value in range(101)])
+        try:
+            saved_cave_trial_count = int(config.get("caveTrialCount", "1"))
+        except (TypeError, ValueError):
+            saved_cave_trial_count = 1
+        self.cave_trial_count.setCurrentIndex(max(0, min(100, saved_cave_trial_count)))
+        self.cave_trial_continue_on_failure = CheckBox("失败继续挑战")
+        self.cave_trial_continue_on_failure.setChecked(config.get("caveTrialContinueOnFailure", "true").lower() == "true")
+        self.cave_trial_ticket_label = QLabel("元辰灵玉 -- 个 · 当前层数 --")
+        self.cave_trial_ticket_label.setObjectName("muted")
+        cave_trial_layout.addWidget(self.cave_trial_enabled, 0, 0)
+        cave_trial_layout.addWidget(QLabel("挑战次数"), 0, 1)
+        cave_trial_layout.addWidget(self.cave_trial_count, 0, 2)
+        cave_trial_layout.addWidget(self.cave_trial_continue_on_failure, 0, 3)
+        cave_trial_layout.addWidget(self.cave_trial_ticket_label, 0, 4)
+        cave_trial_layout.setColumnStretch(5, 1)
+        content_layout.addWidget(cave_trial_task)
+
+        rule_trial_task = Card(object_name="softCard")
+        rule_trial_layout = QGridLayout(rule_trial_task); set_margins(rule_trial_layout, 16, 12, 16, 12)
+        rule_trial_layout.setHorizontalSpacing(12)
+        self.rule_trial_enabled = CheckBox("法则试炼")
+        self.rule_trial_enabled.setChecked(config.get("autoRuleTrial", "false").lower() == "true")
+        rule_trial_hint = QLabel("仅执行一键速战并领取奖励，不进行普通挑战")
+        rule_trial_hint.setObjectName("muted")
+        rule_trial_layout.addWidget(self.rule_trial_enabled, 0, 0)
+        rule_trial_layout.addWidget(rule_trial_hint, 0, 1)
+        rule_trial_layout.setColumnStretch(2, 1)
+        content_layout.addWidget(rule_trial_task)
 
         treasure_auction_task = Card(object_name="softCard")
         treasure_auction_layout = QGridLayout(treasure_auction_task); set_margins(treasure_auction_layout, 16, 12, 16, 12)
@@ -846,11 +936,11 @@ class XundaoWindow(FramelessWindow):
         except (TypeError, ValueError):
             saved_magic_paid = 0
         self.magic_paid_count.setCurrentIndex(max(0, min(100, saved_magic_paid)))
-        self.magic_free_label = QLabel("免费可用 --/3 次"); self.magic_free_label.setObjectName("muted")
+        self.magic_free_label = QLabel("广告免费 --/2 · 本次免费 --/2"); self.magic_free_label.setObjectName("muted")
         self.magic_ticket_label = QLabel("天衍令可用 -- 次"); self.magic_ticket_label.setObjectName("muted")
         magic_layout.addWidget(self.magic_draw_enabled, 0, 0)
-        magic_layout.addWidget(QLabel("免费选择"), 0, 1); magic_layout.addWidget(self.magic_draw_count, 0, 2)
-        magic_layout.addWidget(self.magic_free_label, 0, 3)
+        magic_layout.addWidget(QLabel("免费次数"), 0, 1)
+        magic_layout.addWidget(self.magic_free_label, 0, 2, 1, 2)
         magic_layout.addWidget(QLabel("消耗选择"), 1, 1); magic_layout.addWidget(self.magic_paid_count, 1, 2)
         magic_layout.addWidget(self.magic_ticket_label, 1, 3); magic_layout.setColumnStretch(4, 1)
         content_layout.addWidget(magic_task)
@@ -872,12 +962,12 @@ class XundaoWindow(FramelessWindow):
         except (TypeError, ValueError):
             saved_spirit_paid = 0
         self.spirit_paid_count.setCurrentIndex(max(0, min(100, saved_spirit_paid)))
-        self.spirit_remaining_label = QLabel("免费可用 --/2 次")
+        self.spirit_remaining_label = QLabel("广告免费 --/2 · 本次免费 --/2")
         self.spirit_remaining_label.setObjectName("muted")
         self.spirit_ticket_label = QLabel("召唤令可用 -- 次"); self.spirit_ticket_label.setObjectName("muted")
         spirit_layout.addWidget(self.spirit_draw_enabled, 0, 0)
-        spirit_layout.addWidget(QLabel("免费选择"), 0, 1); spirit_layout.addWidget(self.spirit_draw_count, 0, 2)
-        spirit_layout.addWidget(self.spirit_remaining_label, 0, 3)
+        spirit_layout.addWidget(QLabel("免费次数"), 0, 1)
+        spirit_layout.addWidget(self.spirit_remaining_label, 0, 2, 1, 2)
         spirit_layout.addWidget(QLabel("消耗选择"), 1, 1); spirit_layout.addWidget(self.spirit_paid_count, 1, 2)
         spirit_layout.addWidget(self.spirit_ticket_label, 1, 3); spirit_layout.setColumnStretch(4, 1)
         content_layout.addWidget(spirit_task)
@@ -887,20 +977,20 @@ class XundaoWindow(FramelessWindow):
         law_looks_layout.setHorizontalSpacing(12); law_looks_layout.setVerticalSpacing(8)
         self.law_looks_draw_enabled = CheckBox("召唤法象")
         self.law_looks_draw_enabled.setChecked(config.get("autoLawLooksDraw", "false").lower() == "true")
-        self.law_looks_draw_count = ComboBox(); self.law_looks_draw_count.addItems(["0 次", "1 次", "2 次"])
+        self.law_looks_draw_count = ComboBox(); self.law_looks_draw_count.addItems(["0 次", "1 次"])
         self.law_looks_paid_count = ComboBox(); self.law_looks_paid_count.addItems([f"{value} 次" for value in range(101)])
         try:
-            saved_law_looks_count = int(config.get("lawLooksDrawCount", "2"))
+            saved_law_looks_count = int(config.get("lawLooksDrawCount", "1"))
             saved_law_looks_paid = int(config.get("lawLooksPaidDrawCount", "0"))
         except (TypeError, ValueError):
-            saved_law_looks_count, saved_law_looks_paid = 2, 0
-        self.law_looks_draw_count.setCurrentIndex(max(0, min(2, saved_law_looks_count)))
+            saved_law_looks_count, saved_law_looks_paid = 1, 0
+        self.law_looks_draw_count.setCurrentIndex(max(0, min(1, saved_law_looks_count)))
         self.law_looks_paid_count.setCurrentIndex(max(0, min(100, saved_law_looks_paid)))
-        self.law_looks_remaining_label = QLabel("免费可用 --/2 次"); self.law_looks_remaining_label.setObjectName("muted")
+        self.law_looks_remaining_label = QLabel("广告免费 --/2 · 本次免费 --/2"); self.law_looks_remaining_label.setObjectName("muted")
         self.law_looks_ticket_label = QLabel("引灵灯可用 -- 次"); self.law_looks_ticket_label.setObjectName("muted")
         law_looks_layout.addWidget(self.law_looks_draw_enabled, 0, 0)
-        law_looks_layout.addWidget(QLabel("免费选择"), 0, 1); law_looks_layout.addWidget(self.law_looks_draw_count, 0, 2)
-        law_looks_layout.addWidget(self.law_looks_remaining_label, 0, 3)
+        law_looks_layout.addWidget(QLabel("免费次数"), 0, 1)
+        law_looks_layout.addWidget(self.law_looks_remaining_label, 0, 2, 1, 2)
         law_looks_layout.addWidget(QLabel("消耗选择"), 1, 1); law_looks_layout.addWidget(self.law_looks_paid_count, 1, 2)
         law_looks_layout.addWidget(self.law_looks_ticket_label, 1, 3); law_looks_layout.setColumnStretch(4, 1)
         content_layout.addWidget(law_looks_task)
@@ -910,16 +1000,16 @@ class XundaoWindow(FramelessWindow):
         pet_kernel_layout.setHorizontalSpacing(12); pet_kernel_layout.setVerticalSpacing(8)
         self.pet_kernel_draw_enabled = CheckBox("凝聚内丹")
         self.pet_kernel_draw_enabled.setChecked(config.get("autoPetKernelDraw", "false").lower() == "true")
-        self.pet_kernel_draw_count = ComboBox(); self.pet_kernel_draw_count.addItems(["0 次", "1 次", "2 次"])
+        self.pet_kernel_draw_count = ComboBox(); self.pet_kernel_draw_count.addItems(["0 次", "1 次"])
         self.pet_kernel_paid_count = ComboBox(); self.pet_kernel_paid_count.addItems([f"{value} 次" for value in range(101)])
         try:
-            saved_pet_kernel_count = int(config.get("petKernelDrawCount", "2"))
+            saved_pet_kernel_count = int(config.get("petKernelDrawCount", "1"))
             saved_pet_kernel_paid = int(config.get("petKernelPaidDrawCount", "0"))
         except (TypeError, ValueError):
-            saved_pet_kernel_count, saved_pet_kernel_paid = 2, 0
-        self.pet_kernel_draw_count.setCurrentIndex(max(0, min(2, saved_pet_kernel_count)))
+            saved_pet_kernel_count, saved_pet_kernel_paid = 1, 0
+        self.pet_kernel_draw_count.setCurrentIndex(max(0, min(1, saved_pet_kernel_count)))
         self.pet_kernel_paid_count.setCurrentIndex(max(0, min(100, saved_pet_kernel_paid)))
-        self.pet_kernel_remaining_label = QLabel("免费可用 --/2 次"); self.pet_kernel_remaining_label.setObjectName("muted")
+        self.pet_kernel_remaining_label = QLabel("免费可用 --/1 次"); self.pet_kernel_remaining_label.setObjectName("muted")
         self.pet_kernel_item_label = QLabel("本源丹可用 -- 次"); self.pet_kernel_item_label.setObjectName("muted")
         pet_kernel_layout.addWidget(self.pet_kernel_draw_enabled, 0, 0)
         pet_kernel_layout.addWidget(QLabel("免费选择"), 0, 1); pet_kernel_layout.addWidget(self.pet_kernel_draw_count, 0, 2)
@@ -974,8 +1064,7 @@ class XundaoWindow(FramelessWindow):
         self.magic_treasure_enabled = CheckBox("法宝寻宝")
         self.magic_treasure_enabled.setChecked(config.get("autoMagicTreasure", "false").lower() == "true")
         treasure_layout.addWidget(self.magic_treasure_enabled, 0, 0)
-        treasure_layout.addWidget(QLabel("免费选择"), 0, 2)
-        treasure_layout.addWidget(QLabel("免费可用"), 0, 4)
+        treasure_layout.addWidget(QLabel("免费次数"), 0, 2, 1, 3)
         treasure_layout.addWidget(QLabel("消耗选择"), 0, 5)
         treasure_layout.addWidget(QLabel("灵盘可用"), 0, 7)
         self.magic_treasure_free_counts = {}
@@ -992,15 +1081,14 @@ class XundaoWindow(FramelessWindow):
                 saved_free, saved_paid = 2, 0
             free_count.setCurrentIndex(max(0, min(2, saved_free)))
             paid_count.setCurrentIndex(max(0, min(100, saved_paid)))
-            free_label = QLabel("--/2 次"); free_label.setObjectName("muted")
+            free_label = QLabel("广告 --/2 · 本次 --/2"); free_label.setObjectName("muted")
             compass_label = QLabel("-- 个"); compass_label.setObjectName("muted")
             self.magic_treasure_free_counts[pool_id] = free_count
             self.magic_treasure_paid_counts[pool_id] = paid_count
             self.magic_treasure_free_labels[pool_id] = free_label
             self.magic_treasure_compass_labels[pool_id] = compass_label
             treasure_layout.addWidget(QLabel(pool_name), row, 1)
-            treasure_layout.addWidget(free_count, row, 2)
-            treasure_layout.addWidget(free_label, row, 4)
+            treasure_layout.addWidget(free_label, row, 2, 1, 3)
             treasure_layout.addWidget(paid_count, row, 5)
             treasure_layout.addWidget(compass_label, row, 7)
         treasure_layout.setColumnStretch(8, 1)
@@ -1024,6 +1112,9 @@ class XundaoWindow(FramelessWindow):
             self.talent_enabled,
             self.tower_enabled,
             self.adventure_enabled,
+            self.sky_war_enabled,
+            self.cave_trial_enabled,
+            self.rule_trial_enabled,
             self.treasure_auction_enabled,
             self.divine_mind_enabled,
             self.magic_draw_enabled,
@@ -1084,13 +1175,17 @@ class XundaoWindow(FramelessWindow):
         pause = PushButton(FIF.PAUSE, "暂停"); pause.clicked.connect(lambda: self.append_log("当前任务暂不支持暂停。"))
         self.stop_button = PushButton(FIF.CANCEL, "停止"); self.stop_button.clicked.connect(self.stop_chop)
         self.stop_button.setStyleSheet("color:#d94f4f;")
+        self.relogin_button = PushButton(FIF.SYNC, "重新登录")
+        self.relogin_button.clicked.connect(self.start_login)
+        self.relogin_button.hide()
         self.connection_status = QLabel("●  等待连接"); self.connection_status.setObjectName("statusGood")
         self.runtime_label = QLabel("运行时长：00:00:00"); self.runtime_label.setObjectName("muted")
         layout.addWidget(config); layout.addWidget(import_button); layout.addWidget(export_button)
         layout.addStretch(1)
         layout.addWidget(self.start_button); layout.addWidget(pause); layout.addWidget(self.stop_button)
         layout.addStretch(1)
-        layout.addWidget(self.connection_status); layout.addSpacing(24); layout.addWidget(self.runtime_label)
+        layout.addWidget(self.connection_status); layout.addWidget(self.relogin_button)
+        layout.addSpacing(24); layout.addWidget(self.runtime_label)
         return footer
 
     def _update_runtime(self) -> None:
@@ -1125,20 +1220,50 @@ class XundaoWindow(FramelessWindow):
         self.resource_values["境界"].setText(str(role.get("realmsId", "-")))
         update_config(selectedServerId=role.get("serverId", ""))
         self.append_log(f"已选择 {role.get('serverName', '-')} / {role.get('nickName', '-')}。")
-        selected_server = int(role.get("serverId", 0))
+        self.refresh_profile("角色初始化")
+
+    def refresh_profile(self, reason: str = "数据刷新") -> None:
+        """Coalesce profile refreshes so task updates never open competing sessions."""
+        if not self.current_role:
+            return
+        self._profile_refresh_requested.set()
+        if not self._profile_refresh_lock.acquire(blocking=False):
+            return
 
         def worker() -> None:
             try:
-                self._emit_event("profile_snapshot", fetch_role_snapshot(selected_server, OUTPUT_DIR))
-            except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
-                self._emit_event("profile_error", f"{type(exc).__name__}: {exc}")
+                while self._profile_refresh_requested.is_set():
+                    self._profile_refresh_requested.clear()
+                    role = dict(self.current_role or {})
+                    server_id = int(role.get("serverId", 0))
+                    if not server_id:
+                        continue
+                    try:
+                        snapshot = fetch_role_snapshot(server_id, OUTPUT_DIR)
+                        self._emit_event("profile_snapshot", snapshot)
+                    except (
+                        OSError, ValueError, KeyError, RuntimeError, TimeoutError,
+                        websocket.WebSocketException,
+                    ) as exc:
+                        if self._is_disconnect_error(exc):
+                            self._emit_event("game_disconnected", f"{type(exc).__name__}: {exc}")
+                        self._emit_event(
+                            "profile_error", f"{reason}失败：{type(exc).__name__}: {exc}",
+                        )
+            finally:
+                self._profile_refresh_lock.release()
+                # Cover a refresh request arriving between the loop check and release.
+                if self._profile_refresh_requested.is_set():
+                    self.refresh_profile(reason)
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, name="profile-refresh", daemon=True).start()
 
     def show_dashboard(self, path: Path, roles: list[dict[str, Any]]) -> None:
         self.login_path, self.roles = path, roles
         dashboard = self._build_dashboard(); self.stack.addWidget(dashboard); self.stack.setCurrentWidget(dashboard)
         self.app_title_bar.set_connected(True)
+        self.game_connected = True
+        self.relogin_button.hide()
         saved = read_config().get("selectedServerId", "")
         index = next((i for i, role in enumerate(roles) if str(role.get("serverId")) == saved), 0)
         if roles:
@@ -1192,6 +1317,9 @@ class XundaoWindow(FramelessWindow):
 
     def start_login(self) -> None:
         self.app_title_bar.set_connected(False)
+        self.game_connected = False
+        if hasattr(self, "relogin_button"):
+            self.relogin_button.hide()
         self.stack.setCurrentWidget(self.login_page)
         try: config = read_config()
         except Exception as exc: self.login_status.setText(str(exc)); return
@@ -1244,6 +1372,9 @@ class XundaoWindow(FramelessWindow):
         run_talent = self.talent_enabled.isChecked()
         run_tower = self.tower_enabled.isChecked()
         run_adventure = self.adventure_enabled.isChecked()
+        run_sky_war = self.sky_war_enabled.isChecked()
+        run_cave_trial = self.cave_trial_enabled.isChecked()
+        run_rule_trial = self.rule_trial_enabled.isChecked()
         run_treasure_auction = self.treasure_auction_enabled.isChecked()
         run_divine_mind = self.divine_mind_enabled.isChecked()
         run_magic_draw = self.magic_draw_enabled.isChecked()
@@ -1258,6 +1389,9 @@ class XundaoWindow(FramelessWindow):
             run_chop, run_wild_boss, run_invade, run_star_trial, run_hero_rank,
             run_destiny_travel, run_profession_quick, run_profession_challenge,
             run_yard_daily, run_yard_draw, run_homeland, run_talent, run_tower, run_adventure,
+            run_sky_war,
+            run_cave_trial,
+            run_rule_trial,
             run_treasure_auction,
             run_divine_mind,
             run_magic_draw, run_spirit_draw, run_law_looks_draw, run_pet_kernel_draw,
@@ -1268,6 +1402,7 @@ class XundaoWindow(FramelessWindow):
             return
         action = "decompose" if self.action_input.currentIndex() == 1 else "stop"
         count = self.count_values[self.count_input.currentIndex()]
+        cave_trial_count = self.cave_trial_count.currentIndex()
         saved_count = "unlimited" if count is None else count
         attribute_type = self.attribute_values[self.attribute_input.currentIndex()]
         update_config(
@@ -1301,11 +1436,18 @@ class XundaoWindow(FramelessWindow):
             autoTower=run_tower,
             towerChallengeCount=self.tower_count.currentIndex(),
             towerUsePreference=self.tower_preference_enabled.isChecked(),
+            towerContinueOnFailure=self.tower_continue_on_failure.isChecked(),
             autoAdventure=run_adventure,
             adventureCount=(
                 "unlimited" if self.adventure_count.currentIndex() == 0
                 else self.adventure_count.currentIndex()
             ),
+            adventureContinueOnFailure=self.adventure_continue_on_failure.isChecked(),
+            autoSkyWar=run_sky_war,
+            autoCaveTrial=run_cave_trial,
+            caveTrialCount=cave_trial_count,
+            caveTrialContinueOnFailure=self.cave_trial_continue_on_failure.isChecked(),
+            autoRuleTrial=run_rule_trial,
             autoTreasureAuction=run_treasure_auction,
             treasureClaimRewards=self.treasure_claim_enabled.isChecked(),
             treasureBeginExplores=self.treasure_begin_enabled.isChecked(),
@@ -1365,7 +1507,9 @@ class XundaoWindow(FramelessWindow):
         talent_draw_interval = self.talent_draw_interval.value()
         tower_count = self.tower_count.currentIndex()
         tower_use_preference = self.tower_preference_enabled.isChecked()
+        tower_continue_on_failure = self.tower_continue_on_failure.isChecked()
         adventure_count = self.adventure_count.currentIndex()
+        adventure_continue_on_failure = self.adventure_continue_on_failure.isChecked()
         treasure_claim_rewards = self.treasure_claim_enabled.isChecked()
         treasure_begin_explores = self.treasure_begin_enabled.isChecked()
         treasure_help_friends = self.treasure_help_enabled.isChecked()
@@ -1400,6 +1544,11 @@ class XundaoWindow(FramelessWindow):
             self.append_log(f"开始执行自动砍树：{role.get('serverName')} / {role.get('nickName')}，计划 {count_text}。")
         def worker() -> None:
             try:
+                mail_result = claim_role_mail_rewards(int(role["serverId"]), OUTPUT_DIR)
+                if mail_result.get("ret") == 0 and mail_result.get("rewards"):
+                    self._emit_event(
+                        "chop_log", f"邮箱附件已自动领取：{mail_result['rewards']}。"
+                    )
                 auxiliary_tasks = [
                     (run_wild_boss, run_wild_boss_tasks, wild_boss_count, "挑战妖王"),
                     (run_invade, run_invade_tasks, invade_count, "异兽入侵"),
@@ -1438,22 +1587,28 @@ class XundaoWindow(FramelessWindow):
                         lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_tower_tasks(
                             server_id, output_dir, task_count, task_log, stop_event, snapshot,
                             use_preferences=tower_use_preference,
+                            continue_on_loss=tower_continue_on_failure,
                         ),
                         tower_count, "镇妖塔",
                     ),
-                    (run_adventure, run_adventure_tasks, adventure_count, "冒险"),
                     (
-                        run_treasure_auction,
-                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_treasure_auction_tasks(
+                        run_adventure,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_adventure_tasks(
                             server_id, output_dir, task_count, task_log, stop_event, snapshot,
-                            claim_rewards=treasure_claim_rewards,
-                            begin_explores=treasure_begin_explores,
-                            help_friends=treasure_help_friends,
-                            identify_treasures=treasure_identify,
-                            disassemble_quality=treasure_disassemble_quality,
+                            continue_on_loss=adventure_continue_on_failure,
                         ),
-                        1, "仙途寻宝",
+                        adventure_count, "冒险",
                     ),
+                    (run_sky_war, run_sky_war_tasks, 5, "征战诸天"),
+                    (
+                        run_cave_trial,
+                        lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_cave_trial_tasks(
+                            server_id, output_dir, task_count, task_log, stop_event, snapshot,
+                            continue_on_loss=self.cave_trial_continue_on_failure.isChecked(),
+                        ),
+                        cave_trial_count, "元辰试炼",
+                    ),
+                    (run_rule_trial, run_rule_trial_tasks, 1, "法则试炼"),
                     (
                         run_magic_draw,
                         lambda server_id, output_dir, task_count, task_log, stop_event, snapshot: run_magic_draw_tasks(
@@ -1514,18 +1669,53 @@ class XundaoWindow(FramelessWindow):
                 ]
                 task_results = []
                 for enabled, runner, task_count, task_name in auxiliary_tasks:
+                    if self.chop_stop_event.is_set():
+                        break
                     if not enabled:
                         continue
-                    result = runner(
-                        int(role["serverId"]), OUTPUT_DIR, task_count,
-                        lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
-                        snapshot=lambda value: self._emit_event("profile_snapshot", value),
-                    )
+                    try:
+                        result = runner(
+                            int(role["serverId"]), OUTPUT_DIR, task_count,
+                            lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
+                            snapshot=lambda value: self._emit_event("profile_snapshot", value),
+                        )
+                    except (
+                        OSError, RuntimeError, TimeoutError, websocket.WebSocketException,
+                    ) as exc:
+                        if self._is_disconnect_error(exc):
+                            self._emit_event("game_disconnected", f"{type(exc).__name__}: {exc}")
+                        result = {
+                            "ret": None, "completed": 0, "remaining": task_count,
+                            "reason": "task_request_failed",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                        self._emit_event(
+                            "chop_log",
+                            f"{task_name}连接或请求失败：{type(exc).__name__}: {exc}，继续下一任务。",
+                        )
                     result["taskName"] = task_name
                     task_results.append(result)
                     self._emit_event("limited_task_result", result)
+                    # Give the previous task's session time to close before the
+                    # next task opens another WebSocket connection.
+                    if self.chop_stop_event.wait(2.0):
+                        break
                 if not run_chop:
-                    if run_divine_mind:
+                    if run_treasure_auction and not self.chop_stop_event.is_set():
+                        result = run_treasure_auction_tasks(
+                            int(role["serverId"]), OUTPUT_DIR, 1,
+                            lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
+                            snapshot=lambda value: self._emit_event("profile_snapshot", value),
+                            claim_rewards=treasure_claim_rewards,
+                            begin_explores=treasure_begin_explores,
+                            help_friends=treasure_help_friends,
+                            identify_treasures=treasure_identify,
+                            disassemble_quality=treasure_disassemble_quality,
+                        )
+                        result["taskName"] = "仙途寻宝"
+                        task_results.append(result)
+                        self._emit_event("limited_task_result", result)
+                    if run_divine_mind and not self.chop_stop_event.is_set():
                         result = run_divine_mind_collection_tasks(
                             int(role["serverId"]), OUTPUT_DIR, 1,
                             lambda msg: self._emit_event("chop_log", msg), self.chop_stop_event,
@@ -1544,14 +1734,27 @@ class XundaoWindow(FramelessWindow):
                     snapshot=lambda value: self._emit_event("profile_snapshot", value),
                     auto_rank_battle=auto_rank_battle,
                     divine_mind_interval_minutes=(divine_mind_interval if run_divine_mind else None),
+                    treasure_auction_options=(
+                        {
+                            "claim_rewards": treasure_claim_rewards,
+                            "begin_explores": treasure_begin_explores,
+                            "help_friends": treasure_help_friends,
+                            "identify_treasures": treasure_identify,
+                            "disassemble_quality": treasure_disassemble_quality,
+                        }
+                        if run_treasure_auction else None
+                    ),
                 )
-                try:
-                    self._emit_event(
-                        "profile_snapshot",
-                        fetch_role_snapshot(int(role["serverId"]), OUTPUT_DIR),
-                    )
-                except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
-                    self._emit_event("profile_error", f"最终资源刷新失败：{type(exc).__name__}: {exc}")
+                if result.get("reason") != "stopped" and not self.chop_stop_event.is_set():
+                    try:
+                        self._emit_event(
+                            "profile_snapshot",
+                            fetch_role_snapshot(int(role["serverId"]), OUTPUT_DIR),
+                        )
+                    except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
+                        if self._is_disconnect_error(exc):
+                            self._emit_event("game_disconnected", f"{type(exc).__name__}: {exc}")
+                        self._emit_event("profile_error", f"最终资源刷新失败：{type(exc).__name__}: {exc}")
                 self._emit_event("chop_success", result)
             except Exception as exc:
                 self.chop_stop_event.set()
@@ -1560,6 +1763,8 @@ class XundaoWindow(FramelessWindow):
                     (OUTPUT_DIR / "chop-task-error.log").write_text(detail, encoding="utf-8")
                 except OSError:
                     pass
+                if self._is_disconnect_error(exc):
+                    self._emit_event("game_disconnected", f"{type(exc).__name__}: {exc}")
                 self._emit_event("chop_error", f"{type(exc).__name__}: {exc}")
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1569,6 +1774,22 @@ class XundaoWindow(FramelessWindow):
             return
         self.chop_stop_event.set()
         self.append_log("已请求停止，当前操作完成后将安全退出。")
+
+    def _show_game_disconnected(self, detail: str = "") -> None:
+        """Reflect a server-side session replacement in the dashboard."""
+        if not self.game_connected:
+            return
+        self.game_connected = False
+        self.chop_stop_event.set()
+        self.start_button.setEnabled(True)
+        self._stop_runtime()
+        self.app_title_bar.set_connected(False, "●  账号在别处登录，已断开")
+        self.connection_status.setStyleSheet("color:#d94f4f;font-weight:600;")
+        self.relogin_button.show()
+        message = "检测到账号在别处登录，游戏连接已断开。请点击“重新登录”恢复连接。"
+        if detail:
+            message += f"（{detail}）"
+        self.append_log(message)
 
     def _handle_event(self, event: str, payload: str) -> None:
         value = json.loads(payload)
@@ -1581,6 +1802,7 @@ class XundaoWindow(FramelessWindow):
         elif event == "expired": self.login_status.setText("二维码已过期，请刷新")
         elif event == "failed": self.login_status.setText("登录失败，请刷新二维码或更新配置")
         elif event == "error": self.login_status.setText(f"请求失败：{value}")
+        elif event == "game_disconnected": self._show_game_disconnected(str(value))
         elif event == "chop_log": self.append_log(str(value))
         elif event == "profile_snapshot":
             if not self.current_role or int(value.get("serverId", 0)) != int(self.current_role.get("serverId", 0)):
@@ -1628,10 +1850,19 @@ class XundaoWindow(FramelessWindow):
             if hasattr(self, "spirit_remaining_label"):
                 spirit_remaining = value.get("spiritSummonRemaining")
                 spirit_text = "--" if spirit_remaining is None else str(int(spirit_remaining))
-                self.spirit_remaining_label.setText(f"免费可用 {spirit_text}/2 次")
+                self.spirit_remaining_label.setText(f"广告免费 {spirit_text}/2 · 本次免费 --/2")
                 self.spirit_ticket_label.setText(
                     f"召唤令可用 {int(value.get('spiritTicketCount', 0))} 次"
                 )
+            if hasattr(self, "yard_draw_remaining_label"):
+                yard_ad = value.get("yardAdFreeRemaining")
+                yard_normal = value.get("yardNormalFreeRemaining")
+                if yard_ad is not None or yard_normal is not None:
+                    ad_text = "--" if yard_ad is None else str(int(yard_ad))
+                    normal_text = "--" if yard_normal is None else str(int(yard_normal))
+                    self.yard_draw_remaining_label.setText(
+                        f"广告免费 {ad_text}/2 · 本次免费 {normal_text}/2"
+                    )
             if hasattr(self, "tower_remaining_label"):
                 tower_current = value.get("towerCurrentPass")
                 tower_max = value.get("towerMaxPass")
@@ -1642,6 +1873,17 @@ class XundaoWindow(FramelessWindow):
                 adventure_stage = value.get("adventureCurrentStage")
                 adventure_text = "--" if adventure_stage is None else str(int(adventure_stage))
                 self.adventure_stage_label.setText(f"当前关卡 {adventure_text}")
+            if hasattr(self, "sky_war_remaining_label"):
+                sky_war_remaining = value.get("skyWarRemaining")
+                sky_war_text = "--" if sky_war_remaining is None else str(int(sky_war_remaining))
+                self.sky_war_remaining_label.setText(f"今日剩余 {sky_war_text}/5 次")
+            if hasattr(self, "cave_trial_ticket_label"):
+                cave_level = value.get("caveTrialCurrentLevel")
+                cave_level_text = "--" if cave_level is None else str(int(cave_level))
+                self.cave_trial_ticket_label.setText(
+                    f"元辰灵玉 {int(value.get('caveTrialTicketCount', 0))} 个 · "
+                    f"挑战关卡 {cave_level_text}"
+                )
             if hasattr(self, "treasure_auction_status_label"):
                 maps = value.get("treasureMapCount")
                 used = value.get("treasureWarehouseUsed")
@@ -1660,23 +1902,27 @@ class XundaoWindow(FramelessWindow):
                         f"上次 {int(last_collected)} / 累计 {int(total_collected or 0)} 真元"
                     )
             if hasattr(self, "magic_free_label"):
-                magic_remaining = value.get("magicFreeRemaining")
-                magic_text = "--" if magic_remaining is None else str(int(magic_remaining))
-                self.magic_free_label.setText(f"免费可用 {magic_text}/3 次")
+                magic_ad = value.get("magicAdFreeRemaining")
+                magic_normal = value.get("magicNormalFreeRemaining")
+                ad_text = "--" if magic_ad is None else str(int(magic_ad))
+                normal_text = "--" if magic_normal is None else str(int(magic_normal))
+                self.magic_free_label.setText(f"广告免费 {ad_text}/2 · 本次免费 {normal_text}/2")
                 self.magic_ticket_label.setText(
                     f"天衍令可用 {int(value.get('magicTicketCount', 0))} 次"
                 )
             if hasattr(self, "law_looks_remaining_label"):
-                law_looks_remaining = value.get("lawLooksFreeRemaining")
-                law_looks_text = "--" if law_looks_remaining is None else str(int(law_looks_remaining))
-                self.law_looks_remaining_label.setText(f"免费可用 {law_looks_text}/2 次")
+                law_ad = value.get("lawLooksAdFreeRemaining")
+                law_normal = value.get("lawLooksFreeRemaining")
+                ad_text = "--" if law_ad is None else str(int(law_ad))
+                normal_text = "--" if law_normal is None else str(int(law_normal))
+                self.law_looks_remaining_label.setText(f"广告免费 {ad_text}/2 · 本次免费 {normal_text}/2")
                 self.law_looks_ticket_label.setText(
                     f"引灵灯可用 {int(value.get('lawLooksTicketCount', 0))} 次"
                 )
             if hasattr(self, "pet_kernel_remaining_label"):
                 pet_kernel_remaining = value.get("petKernelFreeRemaining")
                 pet_kernel_text = "--" if pet_kernel_remaining is None else str(int(pet_kernel_remaining))
-                self.pet_kernel_remaining_label.setText(f"免费可用 {pet_kernel_text}/2 次")
+                self.pet_kernel_remaining_label.setText(f"免费可用 {pet_kernel_text}/1 次")
                 self.pet_kernel_item_label.setText(
                     f"本源丹可用 {int(value.get('petKernelDrawItemCount', 0))} 次"
                 )
@@ -1694,9 +1940,11 @@ class XundaoWindow(FramelessWindow):
                 treasure_pools = value.get("magicTreasurePools", {})
                 for pool_id in (1, 2, 3):
                     pool = treasure_pools.get(str(pool_id), treasure_pools.get(pool_id, {}))
-                    free_remaining = pool.get("freeRemaining")
-                    free_text = "--" if free_remaining is None else str(int(free_remaining))
-                    self.magic_treasure_free_labels[pool_id].setText(f"{free_text}/2 次")
+                    ad_remaining = pool.get("adFreeRemaining")
+                    normal_remaining = pool.get("freeRemaining")
+                    ad_text = "--" if ad_remaining is None else str(int(ad_remaining))
+                    normal_text = "--" if normal_remaining is None else str(int(normal_remaining))
+                    self.magic_treasure_free_labels[pool_id].setText(f"广告 {ad_text}/2 · 本次 {normal_text}/2")
                     self.magic_treasure_compass_labels[pool_id].setText(
                         f"{int(pool.get('compassCount', 0))} 个"
                     )
@@ -1729,8 +1977,11 @@ class XundaoWindow(FramelessWindow):
                     f"{task_name}停止：{reason_text}，服务端返回 {value.get('ret')}，"
                     f"已完成 {completed} 次。"
                 )
+            # Individual runners already emit snapshots during execution. Do not
+            # open another full WebSocket session for every limited-task result.
         elif event == "auxiliary_tasks_done":
             self.start_button.setEnabled(True); self._stop_runtime()
+            self.refresh_profile("任务完成后刷新")
         elif event == "chop_success":
             self.start_button.setEnabled(True); self._stop_runtime()
             completed = value.get("completed", 0); reason = value.get("reason", "unknown")
@@ -1745,6 +1996,7 @@ class XundaoWindow(FramelessWindow):
                 "chop_failed": f"砍树请求失败，服务端返回 {value.get('ret')}。",
             }
             self.append_log(messages.get(reason, f"任务停止：{reason}，服务端返回 {value.get('ret')}。"))
+            self.refresh_profile("砍树任务后刷新")
 
     def closeEvent(self, event: Any) -> None:
         self.stop_event.set(); self.chop_stop_event.set(); super().closeEvent(event)
@@ -1755,6 +2007,10 @@ def main() -> int:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     _FAULT_LOG = (OUTPUT_DIR / "qt-fault.log").open("a", encoding="utf-8", buffering=1)
     faulthandler.enable(_FAULT_LOG, all_threads=True)
+    # Cyclic GC can run in a worker thread and finalize PySide wrappers there,
+    # which causes native access violations. Qt widgets use parent ownership;
+    # normal Python reference counting remains active with cyclic GC disabled.
+    gc.disable()
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setFont(QFont(UI_FONT_FAMILY, 10))

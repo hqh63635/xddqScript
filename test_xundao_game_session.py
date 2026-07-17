@@ -2,9 +2,26 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import xundao_game_session as game
+
+
+class GameSessionTimeoutTests(unittest.TestCase):
+    def test_wait_for_uses_one_absolute_deadline_for_unrelated_frames(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token", timeout=0.02)
+        fake_socket = Mock()
+        fake_socket.recv.side_effect = lambda: (
+            time.sleep(0.006) or game.make_frame(999, 1, b"unrelated")
+        )
+        session.socket = fake_socket
+
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            session._wait_for(123, timeout_messages=100)
+
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertGreaterEqual(fake_socket.settimeout.call_count, 1)
 
 
 def message_field(number: int, payload: bytes) -> bytes:
@@ -233,6 +250,119 @@ class YardTaskTests(unittest.TestCase):
         }])
         self.assertEqual(game.parse_yard_draw_data(payload)["drawCount"], 12)
 
+    def test_yard_ad_draw_encodes_ad_type_separately_from_ad_time(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        requests = []
+
+        def request(message_id, response_id, payload=b""):
+            requests.append((message_id, response_id, game.parse_protobuf(payload)))
+            return game.protobuf_int(1, 0)
+
+        session._request = request
+        session.yard_draw(is_ad=True)
+
+        fields = requests[0][2]
+        self.assertEqual(game._values(fields, 1), [0])
+        self.assertEqual(game._values(fields, 2), [0])
+        self.assertEqual(game._values(fields, 3), [1])
+        self.assertEqual(game._values(fields, 4), [0])
+
+    def test_daily_tasks_collect_partial_alchemy_without_restarting(self) -> None:
+        actions = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                pass
+
+            def enter_yard(self):
+                return {
+                    "ret": 0, "drawData": {},
+                    "buildings": {game.YARD_BUILD_STOVE: {
+                        "uniqueId": 2, "buildId": game.YARD_BUILD_STOVE,
+                        "status": 1, "startTime": 1, "endTime": 9_999_999_999_999,
+                        "collectNum": 3, "totalNum": 10,
+                    }},
+                }
+
+            def yard_collect(self, building):
+                actions.append(("collect", building["buildId"]))
+                return {"ret": 0}
+
+            def yard_make(self, building, count, product_id=None):
+                actions.append(("make", building["buildId"], count, product_id))
+                return {"ret": 0}
+
+            def resource_snapshot(self, server_id):
+                return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}',
+                encoding="utf-8",
+            )
+            with patch.object(game, "GameSession", FakeSession):
+                game.run_yard_daily_tasks(42, output_dir, 1, lambda _message: None)
+
+        self.assertEqual(actions, [("collect", game.YARD_BUILD_STOVE)])
+
+    def test_daily_tasks_restart_alchemy_after_collecting_finished_batch(self) -> None:
+        actions = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                pass
+
+            def enter_yard(self):
+                return {
+                    "ret": 0, "drawData": {},
+                    "buildings": {game.YARD_BUILD_STOVE: {
+                        "uniqueId": 2, "buildId": game.YARD_BUILD_STOVE,
+                        "status": 1, "startTime": 1, "endTime": 2,
+                        "collectNum": 10, "totalNum": 10,
+                    }},
+                }
+
+            def yard_collect(self, building):
+                actions.append(("collect", building["buildId"]))
+                return {"ret": 0}
+
+            def yard_grass_num(self):
+                return 1_000
+
+            def yard_make(self, building, count, product_id=None):
+                actions.append(("make", building["buildId"], count, product_id))
+                return {"ret": 0}
+
+            def resource_snapshot(self, server_id):
+                return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}',
+                encoding="utf-8",
+            )
+            with patch.object(game, "GameSession", FakeSession):
+                game.run_yard_daily_tasks(42, output_dir, 1, lambda _message: None)
+
+        self.assertEqual(actions, [
+            ("collect", game.YARD_BUILD_STOVE),
+            ("make", game.YARD_BUILD_STOVE, 2, None),
+        ])
+
     def test_daily_tasks_skip_cistern_while_gestating(self) -> None:
         collected = []
         made = []
@@ -305,7 +435,7 @@ class InvadeTaskTests(unittest.TestCase):
         session = game.GameSession("wss://example.invalid", 1, "token")
         captured = []
 
-        def request(message_id, response_id, payload=b""):
+        def request(message_id, response_id, payload=b"", timeout=None):
             captured.append((message_id, response_id, payload))
             return game.protobuf_int(1, 9001) + game.protobuf_int(3, 0)
 
@@ -621,6 +751,22 @@ class HomelandTaskTests(unittest.TestCase):
 
 
 class TalentTaskTests(unittest.TestCase):
+    def test_talent_deal_uses_top_level_index_and_type(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+
+        def request(message_id, response_id, payload=b""):
+            captured.append((message_id, response_id, game.parse_protobuf(payload)))
+            return game.protobuf_int(1, 0)
+
+        session._request = request
+        session.talent_deal(3, 0)
+
+        fields = captured[0][2]
+        self.assertEqual(captured[0][:2], (game.TALENT_DEAL, game.TALENT_DEAL_RESPONSE))
+        self.assertEqual(game._values(fields, 1), [3])
+        self.assertEqual(game._values(fields, 2), [0])
+
     def test_talent_random_accepts_client_concurrent_range(self) -> None:
         session = game.GameSession("wss://example.invalid", 1, "token")
         with self.assertRaises(ValueError):
@@ -711,7 +857,7 @@ class TalentTaskTests(unittest.TestCase):
             ("enlighten", 2),
             ("random", 1),
             ("deal", 1, 1),
-            ("deal", 0, 2),
+            ("deal", 0, 0),
         ])
         self.assertEqual(result["activated"], 1)
         self.assertEqual(result["resolved"], 2)
@@ -818,6 +964,34 @@ class TalentTaskTests(unittest.TestCase):
         self.assertEqual(random_batches, [3])
         self.assertEqual(result["reason"], "finished")
 
+    def test_talent_1201_downgrades_batch_to_single_and_continues(self) -> None:
+        random_batches = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.tickets = [7, 6, 6, 5]
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def talent_state(self): return {"createLevel": 10, "readBookTimes": 0, "pending": []}
+            def talent_get_pending(self): return {"ret": 0, "pending": []}
+            def item_count(self, item_id): return 3 if item_id == game.TALENT_GRASS_ITEM else 0
+            def talent_random(self, count):
+                random_batches.append(count)
+                return {"ret": 1201 if count > 1 else 0, "pending": []}
+            def resource_snapshot(self, server_id): return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8",
+            )
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_talent_tasks(
+                    42, output_dir, 0, lambda _message: None, concurrent_count=3,
+                )
+
+        self.assertEqual(random_batches, [3, 1, 1, 1])
+        self.assertEqual(result["reason"], "finished")
+
 
 class MagicDrawTaskTests(unittest.TestCase):
     def test_parse_magic_state(self) -> None:
@@ -844,6 +1018,10 @@ class MagicDrawTaskTests(unittest.TestCase):
             def magic_state(self):
                 return {"freeDrawTimes": 1, "freeAdTimes": 1, "lastAdTime": 0}
 
+            def assistant_action(self, action_type, params=None):
+                draws.append(action_type)
+                return {"ret": 0}
+
             def magic_draw(self, _count=1, is_ad=False):
                 draws.append(True)
                 return {"ret": 0, "magicIds": [12345]}
@@ -865,12 +1043,12 @@ class MagicDrawTaskTests(unittest.TestCase):
                     42, output_dir, 2, lambda _message: None,
                 )
 
-        self.assertEqual(draws, [True])
-        self.assertEqual(result["completed"], 1)
+        self.assertEqual(draws, [game.ASSISTANT_MAGIC_VIDEO, game.ASSISTANT_MAGIC_FREE])
+        self.assertEqual(result["completed"], 2)
         self.assertEqual(result["remaining"], 0)
 
     def test_magic_draw_falls_back_when_sync_is_missing(self) -> None:
-        calls = 0
+        calls = []
 
         class FakeSession:
             def __init__(self, *_args, **_kwargs) -> None:
@@ -885,11 +1063,12 @@ class MagicDrawTaskTests(unittest.TestCase):
             def magic_state(self):
                 return None
 
+            def assistant_action(self, action_type, params=None):
+                calls.append(action_type)
+                return {"ret": 0}
+
             def magic_draw(self, _count=1, is_ad=False):
-                nonlocal calls
-                calls += 1
-                ret = 0 if calls == 1 else (4415 if is_ad else 4419)
-                return {"ret": ret, "magicIds": []}
+                return {"ret": 0, "magicIds": []}
 
             def item_count(self, _item_id):
                 return 0
@@ -906,12 +1085,31 @@ class MagicDrawTaskTests(unittest.TestCase):
             with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
                 result = game.run_magic_draw_tasks(42, output_dir, 2, lambda _message: None)
 
-        self.assertEqual(calls, 2)
-        self.assertEqual(result["completed"], 1)
+        self.assertEqual(calls, [game.ASSISTANT_MAGIC_VIDEO, game.ASSISTANT_MAGIC_FREE])
+        self.assertEqual(result["completed"], 2)
         self.assertEqual(result["reason"], "finished")
 
 
 class MagicTreasureTaskTests(unittest.TestCase):
+    def test_assistant_action_encodes_setting_and_pool_params(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+
+        def request(message_id, response_id, payload=b""):
+            captured.append((message_id, response_id, game.parse_protobuf(payload)))
+            return game.protobuf_int(1, 0)
+
+        session._request = request
+        session.assistant_action(game.ASSISTANT_MAGIC_TREASURE_VIDEO, ["1", "2", "3"])
+
+        fields = captured[0][2]
+        setting = game._children(fields, 2)[0]
+        self.assertEqual(captured[0][:2], (game.ASSISTANT_ACTION, game.ASSISTANT_ACTION_RESPONSE))
+        self.assertEqual(game._values(fields, 1), [0])
+        self.assertEqual(game._values(setting, 1), [game.ASSISTANT_MAGIC_TREASURE_VIDEO])
+        self.assertEqual([game._text_value(setting, 2)], ["1"])
+        self.assertEqual([field["text"] for field in setting if field["field"] == 2], ["1", "2", "3"])
+
     def test_compass_items_match_the_three_pools(self) -> None:
         self.assertEqual(game.MAGIC_TREASURE_COMPASS_ITEMS, {
             1: 100197, 2: 100091, 3: 100064,
@@ -994,6 +1192,10 @@ class MagicTreasureTaskTests(unittest.TestCase):
                     3: {"freeDrawTimes": 2, "itemId": 100064},
                 }
 
+            def assistant_action(self, action_type, params=None):
+                requests.append((action_type, tuple(params or [])))
+                return {"ret": 0}
+
             def magic_treasure_draw(self, pool_id, count=1, item_id=0, is_ad=False):
                 requests.append((pool_id, count, item_id, is_ad))
                 return {"ret": 0}
@@ -1017,16 +1219,29 @@ class MagicTreasureTaskTests(unittest.TestCase):
                 )
 
         self.assertEqual(requests, [
-            (1, 1, 100061, False), (1, 1, 100061, False),
+            (1, 1, 0, True), (1, 1, 0, True),
+            (2, 1, 0, True), (2, 1, 0, True),
+            (3, 1, 0, True), (3, 1, 0, True),
             (1, 3, 100061, False),
         ])
-        sleep.assert_called_once_with(8.0)
-        self.assertEqual(result["freeCompleted"], 2)
+        self.assertEqual(sleep.call_count, 6)
+        self.assertEqual(result["freeCompleted"], 6)
         self.assertEqual(result["paidCompleted"], 3)
         self.assertEqual(result["remaining"], 0)
 
 
 class SpiritDrawTaskTests(unittest.TestCase):
+    def test_state_is_requested_when_login_sync_is_missing(self) -> None:
+        state = game.protobuf_int(4, 7) + message_field(8, game.protobuf_int(1, 1))
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+        session._request = lambda message_id, response_id, payload=b"": (
+            captured.append((message_id, response_id, payload)) or state
+        )
+
+        self.assertEqual(session.spirit_state()["freeAdTimes"], 1)
+        self.assertEqual(captured, [(game.SPIRIT_STATE_REQUEST, game.SPIRIT_SYNC, b"")])
+
     def test_free_draw_interval_is_eight_seconds(self) -> None:
         self.assertEqual(game.FREE_DRAW_INTERVAL_SECONDS, 8.0)
 
@@ -1084,8 +1299,62 @@ class SpiritDrawTaskTests(unittest.TestCase):
         self.assertEqual(result["remaining"], 0)
         self.assertEqual(snapshots[0]["spiritSummonRemaining"], 0)
 
+    def test_spirit_draw_executes_each_selected_ad_draw(self) -> None:
+        draws = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                pass
+
+            def spirit_state(self):
+                return {"drawTimes": 0, "freeAdTimes": 0, "lastAdTime": 0}
+
+            def spirit_free_draw(self):
+                draws.append(True)
+                return {"ret": 0, "spiritIds": [121001]}
+
+            def item_count(self, _item_id):
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}',
+                encoding="utf-8",
+            )
+            with (
+                patch.object(game, "GameSession", FakeSession),
+                patch.object(game.time, "sleep") as sleep,
+            ):
+                result = game.run_spirit_draw_tasks(
+                    42, output_dir, 2, lambda _message: None,
+                )
+
+        self.assertEqual(draws, [True, True])
+        sleep.assert_called_once_with(game.FREE_DRAW_INTERVAL_SECONDS)
+        self.assertEqual(result["freeCompleted"], 2)
+
 
 class LawLooksDrawTaskTests(unittest.TestCase):
+    def test_state_enters_feature_when_login_sync_is_missing(self) -> None:
+        enter = game.protobuf_int(1, 0) + message_field(
+            2, game.protobuf_int(2, 1) + game.protobuf_int(3, 0)
+        )
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+        session._request = lambda message_id, response_id, payload=b"": (
+            captured.append((message_id, response_id, payload)) or enter
+        )
+
+        self.assertEqual(session.law_looks_state(), {"freeAdTimes": 1, "freeDrawTimes": 0})
+        self.assertEqual(captured, [(game.LAW_LOOKS_ENTER, game.LAW_LOOKS_ENTER_RESPONSE, b"")])
+
     def test_parse_state_and_snapshot_counts(self) -> None:
         payload = game.protobuf_int(2, 1) + game.protobuf_int(3, 0)
         inventory = message_field(
@@ -1098,7 +1367,7 @@ class LawLooksDrawTaskTests(unittest.TestCase):
         snapshot = game._snapshot_from_frames(42, [
             (301, inventory), (game.LAW_LOOKS_LOGIN_SYNC, payload),
         ])
-        self.assertEqual(snapshot["lawLooksFreeRemaining"], 1)
+        self.assertEqual(snapshot["lawLooksFreeRemaining"], 2)
         self.assertEqual(snapshot["lawLooksTicketCount"], 4)
 
     def test_draw_is_bounded_by_free_quota_and_lamp_inventory(self) -> None:
@@ -1116,6 +1385,10 @@ class LawLooksDrawTaskTests(unittest.TestCase):
 
             def law_looks_state(self):
                 return {"freeAdTimes": 1, "freeDrawTimes": 0}
+
+            def assistant_action(self, action_type, params=None):
+                requests.append(("assistant", action_type))
+                return {"ret": 0}
 
             def law_looks_draw(self, count, draw_type=2):
                 requests.append((count, draw_type))
@@ -1135,16 +1408,22 @@ class LawLooksDrawTaskTests(unittest.TestCase):
             )
             with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
                 result = game.run_law_looks_draw_tasks(
-                    42, output_dir, 2, lambda _message: None, paid_count=5,
+                    42, output_dir, 1, lambda _message: None, paid_count=5,
                 )
 
-        self.assertEqual(requests, [(1, 0), (3, 2)])
+        self.assertEqual(requests, [("assistant", game.ASSISTANT_LAW_LOOKS_REWARD), (3, 2)])
         self.assertEqual(result["freeCompleted"], 1)
         self.assertEqual(result["paidCompleted"], 3)
         self.assertEqual(result["remaining"], 0)
 
 
 class PetKernelDrawTaskTests(unittest.TestCase):
+    def test_missing_push_state_does_not_issue_blocking_request(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        session._request = Mock(side_effect=AssertionError("unexpected state request"))
+
+        self.assertIsNone(session.pet_kernel_state())
+
     def test_parse_state_and_snapshot_counts(self) -> None:
         payload = (
             game.protobuf_int(3, 1)
@@ -1161,7 +1440,7 @@ class PetKernelDrawTaskTests(unittest.TestCase):
         snapshot = game._snapshot_from_frames(42, [
             (301, inventory), (game.PET_KERNEL_STATE_RESPONSE, payload),
         ])
-        self.assertEqual(snapshot["petKernelFreeRemaining"], 1)
+        self.assertEqual(snapshot["petKernelFreeRemaining"], 0)
         self.assertEqual(snapshot["petKernelDrawItemCount"], 13)
 
     def test_draw_uses_free_quota_and_batches_paid_count(self) -> None:
@@ -1178,7 +1457,7 @@ class PetKernelDrawTaskTests(unittest.TestCase):
                 pass
 
             def pet_kernel_state(self):
-                return {"freeDrawTimes": 1, "drawCount": 0, "ensureCount": 0}
+                return {"freeDrawTimes": 0, "drawCount": 0, "ensureCount": 0}
 
             def pet_kernel_draw(self, ten=False):
                 requests.append(ten)
@@ -1198,7 +1477,7 @@ class PetKernelDrawTaskTests(unittest.TestCase):
             )
             with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
                 result = game.run_pet_kernel_draw_tasks(
-                    42, output_dir, 2, lambda _message: None, paid_count=20,
+                    42, output_dir, 1, lambda _message: None, paid_count=20,
                 )
 
         self.assertEqual(requests, [False, True, False, False, False])
@@ -1312,7 +1591,482 @@ class UniverseTaskTests(unittest.TestCase):
         self.assertEqual(snapshots[0]["universeStoneCount"], 0)
 
 
+class RuleTrialTaskTests(unittest.TestCase):
+    def test_parse_state_and_quick_reward_request(self) -> None:
+        payload = (
+            game.protobuf_int(2, 12) + game.protobuf_int(3, 50105)
+            + game.protobuf_int(4, 0)
+        )
+        self.assertEqual(game.parse_rule_trial_state(payload), {
+            "totalChallengeTimes": 12, "bestBossId": 50105, "isRepeated": False,
+        })
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+
+        def request(message_id, response_id, body=b""):
+            captured.append((message_id, response_id, body))
+            return game.protobuf_int(1, 0) + game.protobuf_string(2, "100003=20")
+
+        session._request = request  # type: ignore[method-assign]
+        result = session.rule_trial_quick_repeat()
+        self.assertEqual(captured, [(
+            game.RULE_TRIAL_ONE_KEY_REPEAT, game.RULE_TRIAL_ONE_KEY_REPEAT_RESPONSE, b"",
+        )])
+        self.assertEqual(result["rewards"], "100003=20")
+
+    def test_runner_only_uses_quick_repeat_and_skips_when_already_claimed(self) -> None:
+        calls = []
+
+        class FakeSession:
+            repeated = False
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def rule_trial_state(self):
+                return {"bestBossId": 50105, "isRepeated": self.repeated}
+            def rule_trial_quick_repeat(self):
+                calls.append("quick"); return {"ret": 0, "rewards": "100003=20"}
+            def resource_snapshot(self, server_id): return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_rule_trial_tasks(42, output_dir, 1, lambda _message: None)
+                FakeSession.repeated = True
+                skipped = game.run_rule_trial_tasks(42, output_dir, 1, lambda _message: None)
+
+        self.assertEqual(calls, ["quick"])
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(skipped["completed"], 0)
+
+
+class CaveTrialTaskTests(unittest.TestCase):
+    def test_parse_battle_keeps_first_wave_running_after_win(self) -> None:
+        payload = (
+            game.protobuf_int(1, 0) + game.protobuf_int(2, 1)
+            + game.protobuf_int(5, 1) + game.protobuf_int(6, 0)
+        )
+        result = game.parse_cave_trial_battle(payload)
+        self.assertTrue(result["isWin"])
+        self.assertFalse(result["isEnd"])
+
+    def test_parse_login_sync_and_snapshot_ticket_count(self) -> None:
+        payload = bytes.fromhex("0802103528003002380040004800")
+        self.assertEqual(game.parse_cave_trial_state(payload), {
+            "curLevel": 53, "ticketCount": 2, "selectPos": 0,
+            "freeTicket": 2, "dayRewardCount": 0, "weekTake": 0,
+            "inscriptionStar": 0,
+        })
+        inventory = message_field(
+            1, game.protobuf_int(1, game.CAVE_TRIAL_TICKET_ITEM) + game.protobuf_string(2, "7"),
+        )
+        snapshot = game._snapshot_from_frames(42, [
+            (301, inventory), (game.CAVE_TRIAL_PLAYER_DATA_SYNC, payload),
+        ])
+        self.assertEqual(snapshot["caveTrialTicketCount"], 7)
+        self.assertEqual(snapshot["caveTrialCurrentLevel"], 53)
+
+    def test_battle_request_encodes_level_rate_and_wave(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+
+        def request(message_id, response_id, payload=b"", timeout=None):
+            captured.append((message_id, response_id, payload))
+            return game.protobuf_int(1, 0) + game.protobuf_int(2, 1) + game.protobuf_int(5, 1) + game.protobuf_int(6, 1)
+
+        session._request = request  # type: ignore[method-assign]
+        session.cave_trial_battle(12, 1)
+        session.cave_trial_battle(12, 2)
+        self.assertEqual(captured[0][2], (
+            game.protobuf_int(1, 12) + game.protobuf_int(2, 1) + game.protobuf_int(3, 1)
+        ))
+        self.assertEqual(captured[1][2], game.protobuf_int(1, 12) + game.protobuf_int(2, 2))
+
+    def test_zero_challenges_still_claims_daily_ticket_and_reward(self) -> None:
+        calls = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def cave_trial_state(self):
+                return {"curLevel": 8, "freeTicket": 2, "dayRewardCount": 0}
+            def cave_trial_get_ticket(self): calls.append("ticket"); return {"ret": 0}
+            def cave_trial_day_reward(self): calls.append("daily"); return {"ret": 0}
+            def item_count(self, _item_id): return 7
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_cave_trial_tasks(42, output_dir, 0, lambda _message: None)
+
+        self.assertEqual(calls, ["ticket", "daily"])
+        self.assertEqual(result["completed"], 0)
+
+    def test_failed_attempt_does_not_consume_ticket_and_continues_when_enabled(self) -> None:
+        battles = []
+        settlements = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.tickets = [7, 6, 6, 5]
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def cave_trial_state(self):
+                return {"curLevel": 3, "freeTicket": 0, "dayRewardCount": 1}
+            def cave_trial_battle(self, level, wave):
+                battles.append((level, wave)); return {"ret": 0, "wave": wave, "isEnd": True, "isWin": False}
+            def cave_trial_battle_reward(self, won):
+                settlements.append(won)
+                return {"ret": 0}
+            def cave_trial_day_reward(self): return {"ret": 0}
+            def item_count(self, _item_id): return self.tickets[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_cave_trial_tasks(42, output_dir, 2, lambda _message: None)
+
+        self.assertEqual(battles, [(3, 1), (3, 1)])
+        self.assertEqual(settlements, [False, False])
+        self.assertEqual(result["completed"], 0)
+        self.assertEqual(result["reason"], "finished")
+
+    def test_success_repeats_latest_cleared_level_and_counts_consumed_ticket(self) -> None:
+        battles = []
+        tickets = [7]
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def cave_trial_state(self):
+                return {"curLevel": 8, "freeTicket": 0, "dayRewardCount": 1}
+            def item_count(self, _item_id): return tickets.pop(0)
+            def cave_trial_battle(self, level, wave):
+                battles.append((level, wave)); return {"ret": 0, "wave": wave, "isEnd": True, "isWin": True}
+            def cave_trial_battle_reward(self, won): return {"ret": 0}
+            def cave_trial_day_reward(self): return {"ret": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_cave_trial_tasks(42, output_dir, 1, lambda _message: None)
+
+        self.assertEqual(battles, [(8, 1)])
+        self.assertEqual(result["completed"], 1)
+
+    def test_logs_level_and_each_of_six_waves(self) -> None:
+        logs = []
+        waves = [
+            {"ret": 0, "wave": wave, "isEnd": wave == 6, "isWin": True}
+            for wave in range(1, 7)
+        ]
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def cave_trial_state(self): return {"curLevel": 12, "freeTicket": 0, "dayRewardCount": 1}
+            def cave_trial_day_reward(self): return {"ret": 32807}
+            def item_count(self, _item_id): return 10
+            def cave_trial_battle(self, level, wave): return waves.pop(0)
+            def cave_trial_battle_reward(self, won): return {"ret": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                game.run_cave_trial_tasks(42, output_dir, 1, logs.append)
+
+        for wave in range(1, 7):
+            self.assertTrue(any(f"关卡 12，第 {wave}/6 波" in message for message in logs))
+
+
+class SkyWarTaskTests(unittest.TestCase):
+    def test_opponent_parser_uses_player_base_server_id_field_eight(self) -> None:
+        def opponent(player_id, server_id):
+            base = game.protobuf_int(1, player_id) + game.protobuf_int(2, 99) + game.protobuf_int(8, server_id)
+            return message_field(1, message_field(1, base))
+
+        payload = message_field(3, opponent(4000020000001, 4000020))
+        payload += message_field(3, opponent(4000030000002, 4000030))
+        payload += message_field(3, opponent(4000040000003, 4000040))
+        self.assertEqual(game._sky_war_opponents(game.parse_protobuf(payload)), [
+            {"playerId": 4000020000001, "serverId": 4000020, "position": 0},
+            {"playerId": 4000030000002, "serverId": 4000030, "position": 1},
+            {"playerId": 4000040000003, "serverId": 4000040, "position": 2},
+        ])
+
+    def test_opponent_parser_ignores_nested_non_enemy_players(self) -> None:
+        def opponent(player_id, server_id):
+            return message_field(
+                1, message_field(1, game.protobuf_int(1, player_id) + game.protobuf_int(8, server_id)),
+            )
+
+        payload = message_field(2, opponent(4000099000001, 4000099))
+        payload += b"".join(
+            message_field(3, opponent(4000020000000 + index, 4000020))
+            for index in range(1, 4)
+        )
+        self.assertEqual(
+            [item["playerId"] for item in game._sky_war_opponents(game.parse_protobuf(payload))],
+            [4000020000001, 4000020000002, 4000020000003],
+        )
+
+    def test_opponent_parser_prefers_enemy_group_without_rank_scores(self) -> None:
+        def opponent(player_id, server_id, score=None):
+            value = message_field(
+                1, message_field(1, game.protobuf_int(1, player_id) + game.protobuf_int(8, server_id)),
+            )
+            return value if score is None else value + game.protobuf_int(2, score)
+
+        payload = b"".join(
+            message_field(2, opponent(4000099000000 + index, 4000099, 1000 - index))
+            for index in range(1, 4)
+        )
+        payload += b"".join(
+            message_field(3, opponent(4000020000000 + index, 4000020))
+            for index in range(1, 4)
+        )
+        self.assertEqual(
+            [item["playerId"] for item in game._sky_war_opponents(game.parse_protobuf(payload))],
+            [4000020000001, 4000020000002, 4000020000003],
+        )
+
+    def test_nonzero_fight_result_is_not_counted(self) -> None:
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.player_id = 1
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def task_data(self): return {}
+            def sky_war_remaining_times(self): return 5
+            def sky_war_enter(self): return {"ret": 0, "battleTimes": 5, "opponents": [{"playerId": 2, "serverId": 2, "position": 0}]}
+            def sky_war_fight(self, _opponent): return {"ret": 2108, "battleTimes": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text('{"wsAddress":"wss://x","playerId":1,"token":"t"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_sky_war_tasks(42, output_dir, 5, lambda _message: None)
+        self.assertEqual(result["completed"], 0)
+        self.assertEqual(result["remaining"], 5)
+        self.assertEqual(result["reason"], "sky_war_fight_failed")
+
+    def test_request_payloads_use_free_fight_protocol(self) -> None:
+        session = game.GameSession("wss://example.invalid", 123, "token")
+        captured = []
+
+        def request(message_id, response_id, payload=b""):
+            captured.append((message_id, response_id, payload))
+            return game.protobuf_int(1, 0) + game.protobuf_int(2, 4)
+
+        session._request = request  # type: ignore[method-assign]
+        session.sky_war_enter()
+        session.observed_frames.append((game.SKY_WAR_LOGIN_SYNC, game.protobuf_int(1, 1)))
+        self.assertEqual(session.sky_war_remaining_times(), 1)
+        session.sky_war_fight({"playerId": 456, "serverId": 789, "position": 2})
+        session.claim_task_reward(13501)
+
+        self.assertEqual(captured[0], (
+            game.SKY_WAR_ENTER, game.SKY_WAR_ENTER_RESPONSE,
+            game.protobuf_int(1, 123),
+        ))
+        self.assertEqual(captured[1], (
+            game.SKY_WAR_FIGHT, game.SKY_WAR_FIGHT_RESPONSE,
+            game.protobuf_int(1, 123) + game.protobuf_int(2, 456)
+            + game.protobuf_int(3, 789) + game.protobuf_int(4, 2),
+        ))
+        self.assertEqual(captured[2][0:2], (game.TASK_GET_REWARD, game.TASK_GET_REWARD_RESPONSE))
+        self.assertEqual(captured[2][2], game.protobuf_int(1, 13501))
+
+    def test_runner_counts_all_five_attempts_and_claims_changed_task(self) -> None:
+        fights = []
+        claims = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs):
+                self.player_id = 1
+                self.after = False
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def task_data(self):
+                return {13501: {"value": "5" if self.after else "0", "state": 0}}
+            def sky_war_remaining_times(self): return 5 - len(fights)
+            def sky_war_enter(self):
+                return {"ret": 0, "battleTimes": 5 - len(fights), "opponents": [
+                    {"playerId": 2, "serverId": 20, "position": 0},
+                    {"playerId": 3, "serverId": 30, "position": 1},
+                ]}
+            def sky_war_fight(self, opponent):
+                fights.append(opponent["playerId"])
+                if len(fights) == 5:
+                    self.after = True
+                return {"ret": 0, "battleTimes": 5 - len(fights)}
+            def claim_task_reward(self, task_id):
+                claims.append(task_id)
+                return {"ret": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_sky_war_tasks(42, output_dir, 5, lambda _message: None)
+
+        self.assertEqual(fights, [2, 3, 2, 3, 2])
+        self.assertEqual(result["completed"], 5)
+        self.assertEqual(result["claimed"], 1)
+        self.assertEqual(claims, [13501])
+
+    def test_runner_stops_at_server_reported_remaining_attempts(self) -> None:
+        fights = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.player_id = 1
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def task_data(self): return {}
+            def sky_war_remaining_times(self): return 2
+            def sky_war_enter(self): return {"ret": 0, "battleTimes": 2, "opponents": [
+                {"playerId": 2, "serverId": 20, "position": 0}]}
+            def sky_war_fight(self, opponent):
+                fights.append(opponent)
+                return {"ret": 0, "battleTimes": 2 - len(fights)}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_sky_war_tasks(42, output_dir, 5, lambda _message: None)
+
+        self.assertEqual(len(fights), 2)
+        self.assertEqual(result["completed"], 2)
+
+    def test_runner_stops_when_success_response_does_not_consume_attempt(self) -> None:
+        fights = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.player_id = 1
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def task_data(self): return {}
+            def sky_war_remaining_times(self): return 5
+            def sky_war_enter(self): return {"ret": 0, "battleTimes": 5, "opponents": [
+                {"playerId": 2, "serverId": 20, "position": 0}]}
+            def sky_war_fight(self, opponent):
+                fights.append(opponent)
+                return {"ret": 0, "battleTimes": 5}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_sky_war_tasks(42, output_dir, 5, lambda _message: None)
+
+        self.assertEqual(len(fights), 1)
+        self.assertEqual(result["completed"], 0)
+        self.assertEqual(result["reason"], "sky_war_not_consumed")
+
+    def test_runner_uses_login_sync_remaining_times_instead_of_enter_field_two(self) -> None:
+        fights = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.player_id = 1
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def task_data(self): return {}
+            def sky_war_remaining_times(self): return 1
+            def sky_war_enter(self): return {"ret": 0, "battleTimes": 5, "opponents": [
+                {"playerId": 2, "serverId": 20, "position": 0}]}
+            def sky_war_fight(self, opponent):
+                fights.append(opponent)
+                return {"ret": 0, "battleTimes": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_sky_war_tasks(42, output_dir, 5, lambda _message: None)
+
+        self.assertEqual(len(fights), 1)
+        self.assertEqual(result["completed"], 1)
+
+
 class TowerTaskTests(unittest.TestCase):
+    def test_nonzero_challenge_results_continue_when_enabled(self) -> None:
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def tower_state(self): return {"curPassId": 10, "passMaxId": 10, "leftPendingTimes": 0}
+            def tower_save_preferences(self): return {"ret": 0}
+            def tower_quick_challenge(self): return {"ret": game.TOWER_QUICK_NOT_AVAILABLE, "state": None}
+            def tower_challenge(self): return {"ret": 902, "won": False, "state": None}
+            def resource_snapshot(self, server_id): return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text('{"wsAddress":"wss://x","playerId":1,"token":"t"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_tower_tasks(42, output_dir, 3, lambda _message: None)
+        self.assertEqual(result["completed"], 3)
+
+    def test_loss_continues_by_default_and_counts_attempts(self) -> None:
+        outcomes = iter([False, True])
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def tower_state(self): return {"curPassId": 10, "passMaxId": 10, "leftPendingTimes": 0}
+            def tower_save_preferences(self): return {"ret": 0}
+            def tower_quick_challenge(self): return {"ret": game.TOWER_QUICK_NOT_AVAILABLE, "state": None}
+            def tower_challenge(self): return {"ret": 0, "won": next(outcomes), "state": None}
+            def resource_snapshot(self, server_id): return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_tower_tasks(42, output_dir, 2, lambda _message: None)
+
+        self.assertEqual(result["completed"], 2)
+        self.assertEqual(result["reason"], "finished")
+
+    def test_loss_stops_when_continue_is_disabled(self) -> None:
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def tower_state(self): return {"curPassId": 10, "passMaxId": 10, "leftPendingTimes": 0}
+            def tower_save_preferences(self): return {"ret": 0}
+            def tower_quick_challenge(self): return {"ret": game.TOWER_QUICK_NOT_AVAILABLE, "state": None}
+            def tower_challenge(self): return {"ret": 0, "won": False, "state": None}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_tower_tasks(
+                    42, output_dir, 2, lambda _message: None, continue_on_loss=False)
+
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["reason"], "tower_challenge_lost")
+
     def test_save_preferences_encodes_nested_messages(self) -> None:
         session = game.GameSession("wss://example.invalid", 1, "token")
         captured = []
@@ -1453,6 +2207,61 @@ class TowerTaskTests(unittest.TestCase):
 
 
 class AdventureTaskTests(unittest.TestCase):
+    def test_nonzero_challenge_results_continue_when_enabled(self) -> None:
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def stage_state(self): return {"passStageId": 10}
+            def stage_challenge(self): return {"ret": 30, "won": False}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text('{"wsAddress":"wss://x","playerId":1,"token":"t"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_adventure_tasks(42, output_dir, 3, lambda _message: None)
+        self.assertEqual(result["completed"], 3)
+
+    def test_loss_continues_by_default_and_counts_attempts(self) -> None:
+        outcomes = iter([False, True])
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def stage_state(self): return {"passStageId": 10}
+            def stage_challenge(self): return {"ret": 0, "won": next(outcomes)}
+            def resource_snapshot(self, server_id): return {"serverId": server_id}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+                result = game.run_adventure_tasks(42, output_dir, 2, lambda _message: None)
+
+        self.assertEqual(result["completed"], 2)
+        self.assertEqual(result["reason"], "finished")
+
+    def test_loss_stops_when_continue_is_disabled(self) -> None:
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def stage_state(self): return {"passStageId": 10}
+            def stage_challenge(self): return {"ret": 0, "won": False}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_adventure_tasks(
+                    42, output_dir, 2, lambda _message: None, continue_on_loss=False)
+
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["reason"], "adventure_challenge_lost")
+
     def test_challenge_success_is_response_field_three(self) -> None:
         session = game.GameSession("wss://example.invalid", 1, "token")
         session._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
@@ -1673,8 +2482,8 @@ class SpiritDrawTaskTestsContinued(unittest.TestCase):
                 result = game.run_spirit_draw_tasks(42, output_dir, 2, lambda _message: None)
 
         self.assertEqual(result["completed"], 0)
-        self.assertEqual(result["remaining"], 0)
-        self.assertEqual(result["reason"], "finished")
+        self.assertEqual(result["remaining"], 2)
+        self.assertEqual(result["reason"], "spirit_draw_failed")
 
     def test_spirit_paid_draw_is_limited_by_summon_tickets(self) -> None:
         paid_requests = []
@@ -1717,7 +2526,7 @@ class SpiritDrawTaskTestsContinued(unittest.TestCase):
         self.assertEqual(result["paidCompleted"], 3)
         self.assertEqual(result["remaining"], 0)
 
-    def test_draw_uses_free_single_before_ten_draw(self) -> None:
+    def test_yard_draw_runs_ad_free_with_delay_then_normal_without_delay(self) -> None:
         batches = []
 
         class FakeSession:
@@ -1746,16 +2555,77 @@ class SpiritDrawTaskTestsContinued(unittest.TestCase):
                 '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}',
                 encoding="utf-8",
             )
-            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep"):
+            with patch.object(game, "GameSession", FakeSession), patch.object(game.time, "sleep") as sleep:
                 result = game.run_yard_draw_tasks(42, output_dir, 13, lambda _message: None)
 
         self.assertEqual(batches, [
-            (False, False), (False, True), (False, True), (True, False),
+            (False, True), (False, True), (False, False), (False, False),
         ])
-        self.assertEqual(result["completed"], 13)
+        sleep.assert_called_once_with(game.FREE_DRAW_INTERVAL_SECONDS)
+        self.assertEqual(result["completed"], 4)
 
 
 class TreasureAuctionTests(unittest.TestCase):
+    def test_task_claims_visit_event_then_refreshes_state(self) -> None:
+        calls = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs): self.enters = 0
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def treasure_auction_enter(self):
+                self.enters += 1
+                calls.append("enter")
+                return {
+                    "ret": 0,
+                    "events": ([{"eventId": 1669}] if self.enters == 1 else []),
+                    "places": [], "items": [], "warehouseLimit": 50,
+                }
+            def treasure_auction_select_event(self, event_id, select_index=0):
+                calls.append(("event", event_id, select_index)); return {"ret": 0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_treasure_auction_tasks(
+                    42, output_dir, 1, lambda _message: None,
+                    claim_rewards=False, begin_explores=False,
+                    help_friends=False, identify_treasures=False,
+                )
+
+        self.assertEqual(calls, ["enter", ("event", 1669, 0), "enter"])
+        self.assertEqual(result["completed"], 1)
+
+    def test_parse_state_separates_visit_events_from_treasure_places(self) -> None:
+        event = (
+            game.protobuf_int(1, 1669) + game.protobuf_int(2, 1009)
+            + game.protobuf_int(3, 0) + game.protobuf_int(4, 60022)
+        )
+        place = (
+            game.protobuf_int(1, 1119) + game.protobuf_int(2, 820002)
+            + game.protobuf_int(3, 16) + game.protobuf_int(6, 455)
+        )
+        player = (
+            game.protobuf_int(1, 0) + game.protobuf_int(2, 0)
+            + game.protobuf_message(3, event) + game.protobuf_message(4, place)
+            + game.protobuf_int(5, 50) + game.protobuf_int(6, 44)
+            + game.protobuf_int(12, 1784080396252)
+        )
+        state = game.parse_treasure_auction_state(
+            game.protobuf_int(1, 0) + game.protobuf_message(2, player)
+        )
+
+        self.assertEqual(state["events"], [{
+            "eventId": 1669, "configId": 1009, "state": 0, "appearance": 60022,
+        }])
+        self.assertEqual(state["places"][0]["id"], 1119)
+        self.assertEqual(state["places"][0]["treasureMapId"], 820002)
+        self.assertEqual(state["warehouseLimit"], 50)
+        self.assertEqual(state["equipIds"], {44})
+        self.assertEqual(state["lastCreateEventTime"], 1784080396252)
+
     def test_request_payloads(self) -> None:
         session = game.GameSession("wss://example.invalid", 1, "token")
         captured = []
@@ -1765,13 +2635,18 @@ class TreasureAuctionTests(unittest.TestCase):
             return game.protobuf_int(1, 0)
 
         session._request = request  # type: ignore[method-assign]
+        session.treasure_auction_select_event(1669, 0)
         session.treasure_auction_claim_rewards([3, 5])
         session.treasure_auction_help_one_key()
         session.treasure_auction_disassemble([7, 9])
 
-        self.assertEqual(captured[0][2], game.protobuf_int(1, 3) + game.protobuf_int(1, 5))
-        self.assertEqual(captured[1][2], game.protobuf_int(3, 1))
-        self.assertEqual(captured[2][2], game.protobuf_int(1, 7) + game.protobuf_int(1, 9))
+        self.assertEqual(captured[0], (
+            game.TREASURE_AUCTION_SELECT_EVENT, game.TREASURE_AUCTION_SELECT_EVENT_RESPONSE,
+            game.protobuf_int(1, 1669) + game.protobuf_int(2, 0),
+        ))
+        self.assertEqual(captured[1][2], game.protobuf_int(1, 3) + game.protobuf_int(1, 5))
+        self.assertEqual(captured[2][2], game.protobuf_int(3, 1))
+        self.assertEqual(captured[3][2], game.protobuf_int(1, 7) + game.protobuf_int(1, 9))
 
     def test_task_claims_starts_helps_and_disassembles_selected_quality(self) -> None:
         calls = []
@@ -1800,6 +2675,9 @@ class TreasureAuctionTests(unittest.TestCase):
                         {"id": 20, "isIdentify": False}, {"id": 21, "isIdentify": False},
                     ]}
 
+            def treasure_auction_select_event(self, event_id, select_index=0):
+                calls.append(("event", event_id, select_index)); return {"ret": 0}
+
             def treasure_auction_claim_rewards(self, ids): calls.append(("claim", ids)); return {"ret": 0}
             def treasure_auction_begin(self, place_id): calls.append(("begin", place_id)); return {"ret": 0}
             def treasure_auction_get_help_list(self): return {"ret": 0, "entries": [{}]}
@@ -1824,6 +2702,21 @@ class TreasureAuctionTests(unittest.TestCase):
 
 
 class GameSessionHeartbeatTests(unittest.TestCase):
+    def test_claim_all_mail_rewards_uses_batch_protocol(self) -> None:
+        session = game.GameSession("wss://example.invalid", 1, "token")
+        captured = []
+
+        def request(message_id, response_id, payload=b""):
+            captured.append((message_id, response_id, payload))
+            return game.protobuf_int(1, 0) + game.protobuf_string(2, "100000=50|100003=20")
+
+        session._request = request  # type: ignore[method-assign]
+        result = session.claim_all_mail_rewards()
+        self.assertEqual(captured, [(
+            game.MAIL_GET_ALL_REWARD, game.MAIL_GET_ALL_REWARD_RESPONSE, b"",
+        )])
+        self.assertEqual(result["rewards"], "100000=50|100003=20")
+
     def test_background_heartbeat_runs_while_caller_is_blocked(self) -> None:
         sent = []
 
@@ -1854,6 +2747,45 @@ class GameSessionHeartbeatTests(unittest.TestCase):
 
 
 class ChopDivineMindIntegrationTests(unittest.TestCase):
+    def test_chop_and_treasure_monitor_share_one_session(self) -> None:
+        instances = 0
+        calls = []
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs):
+                nonlocal instances
+                instances += 1
+                self.equipped_items = []
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def resource_snapshot(self, server_id): return {"serverId": server_id, "jade": 0, "spiritStone": 0}
+            def item_count(self, _item_id): return 0
+            def get_pending_equipment(self): return []
+            def treasure_auction_enter(self):
+                calls.append("treasure")
+                return {"ret": 0, "events": [], "places": [], "items": [], "warehouseLimit": 50}
+            def chop_tree(self, auto=False):
+                calls.append("chop")
+                return {"ret": 0, "equipment": [], "rewards": []}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            (output_dir / "player-login-42.json").write_text(
+                '{"wsAddress":"wss://example.invalid","playerId":1,"token":"token"}', encoding="utf-8")
+            with patch.object(game, "GameSession", FakeSession):
+                result = game.run_chop_tasks(
+                    42, output_dir, 1, 0, "decompose", 5, lambda _message: None,
+                    treasure_auction_options={
+                        "claim_rewards": False, "begin_explores": False,
+                        "help_friends": False, "identify_treasures": False,
+                        "disassemble_quality": -1,
+                    },
+                )
+
+        self.assertEqual(instances, 1)
+        self.assertEqual(calls, ["treasure", "chop"])
+        self.assertEqual(result["reason"], "finished")
+
     def test_chop_and_divine_mind_share_one_session(self) -> None:
         instances = 0
         calls = []

@@ -22,7 +22,7 @@ import websocket
 from PIL import Image, ImageTk
 
 from xundao_game_client import fetch_game_data
-from xundao_game_session import run_chop_tasks, run_pupil_training
+from xundao_game_session import GameSession, run_chop_tasks, run_pupil_training
 from xundao_role_client import fetch_roles
 from xundao_qr_login import (
     BASE_URL,
@@ -91,6 +91,9 @@ class LoginApp(tk.Tk):
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
+        self.game_monitor_stop = threading.Event()
+        self.game_monitor_session: GameSession | None = None
+        self.game_connected = False
         self.qr_photo: ImageTk.PhotoImage | None = None
         self.config_data: dict[str, str] = {}
         self.login_frame: ttk.Frame | None = None
@@ -195,6 +198,73 @@ class LoginApp(tk.Tk):
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    def _stop_game_monitor(self) -> None:
+        self.game_monitor_stop.set()
+        session = self.game_monitor_session
+        self.game_monitor_session = None
+        if session is not None:
+            session.close()
+
+    @staticmethod
+    def _is_disconnect_error(exc: BaseException) -> bool:
+        # TimeoutError is an OSError subclass, but a missing business response
+        # does not mean that the account's WebSocket session was replaced.
+        if isinstance(exc, (TimeoutError, websocket.WebSocketTimeoutException)):
+            return False
+        if isinstance(exc, websocket.WebSocketConnectionClosedException):
+            return True
+        if isinstance(exc, OSError):
+            return getattr(exc, "winerror", None) in (10053, 10054, 10057) or getattr(exc, "errno", None) in (
+                32, 54, 57, 104, 107,
+            )
+        return "not connected" in str(exc).lower() or "connection is already closed" in str(exc).lower()
+
+    def _start_game_monitor(self) -> None:
+        self._stop_game_monitor()
+        if not self.current_role:
+            return
+        server_id = int(self.current_role.get("serverId", 0))
+        login_path = OUTPUT_DIR / f"player-login-{server_id}.json"
+        try:
+            login = json.loads(login_path.read_text(encoding="utf-8-sig"))
+            ws_address = str(login["wsAddress"])
+            player_id = int(login["playerId"])
+            token = str(login["token"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            self.events.put(("game_disconnected", f"连接信息读取失败：{exc}"))
+            return
+
+        stop_event = threading.Event()
+        self.game_monitor_stop = stop_event
+
+        def worker() -> None:
+            session = GameSession(ws_address, player_id, token)
+            self.game_monitor_session = session
+            try:
+                session.connect()
+                if stop_event.is_set():
+                    return
+                self.events.put(("game_connected", None))
+                assert session.socket is not None
+                session.socket.settimeout(1.0)
+                while not stop_event.is_set():
+                    try:
+                        data = session.socket.recv()
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    if not data:
+                        raise websocket.WebSocketConnectionClosedException("服务器已关闭游戏连接")
+            except (OSError, RuntimeError, TimeoutError, websocket.WebSocketException) as exc:
+                if not stop_event.is_set():
+                    event = "game_disconnected" if self._is_disconnect_error(exc) else "game_monitor_error"
+                    self.events.put((event, f"{type(exc).__name__}: {exc}"))
+            finally:
+                session.close()
+                if self.game_monitor_session is session:
+                    self.game_monitor_session = None
+
+        threading.Thread(target=worker, name="game-connection-monitor", daemon=True).start()
+
     def _clear_log(self) -> None:
         if self.log_text is None or not self.log_text.winfo_exists():
             return
@@ -298,7 +368,7 @@ class LoginApp(tk.Tk):
 
         actions = ttk.Frame(root)
         actions.pack(fill="x", pady=(12, 0))
-        ttk.Button(actions, text="重新登录", command=lambda: (self._show_login_view(), self.start_login())).pack(side="left")
+        ttk.Button(actions, text="重新登录", command=self.relogin).pack(side="left")
         ttk.Button(actions, text="登录设置", command=self.open_settings).pack(side="left", padx=8)
         ttk.Button(actions, text="进入角色", command=lambda: self._show_role_view(login_path, roles, selected_role)).pack(side="right")
         ttk.Button(actions, text="重新扫码刷新", command=self.start_login).pack(side="right", padx=8)
@@ -325,7 +395,12 @@ class LoginApp(tk.Tk):
         tk.Label(topbar, text="◆", bg="#ffffff", fg="#2aa77a", font=("Microsoft YaHei UI", 15, "bold")).pack(side="left", padx=(18, 8))
         tk.Label(topbar, text="寻道大千脚本助手", bg="#ffffff", fg="#29373c", font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
         tk.Label(topbar, text="v1.0.0", bg="#ffffff", fg="#8a999e", font=("Microsoft YaHei UI", 9)).pack(side="left", padx=8)
-        tk.Label(topbar, text="●  已连接游戏", bg="#ffffff", fg="#25a86f", font=("Microsoft YaHei UI", 9)).pack(side="right", padx=20)
+        self.connection_status_label = tk.Label(
+            topbar, text="●  正在连接游戏", bg="#ffffff", fg="#8a989d",
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.connection_status_label.pack(side="right", padx=(8, 20))
+        self.relogin_button = ttk.Button(topbar, text="重新登录", command=self.relogin)
 
         content = tk.Frame(root, bg="#f4f7f6")
         content.pack(fill="both", expand=True, padx=18, pady=(14, 0))
@@ -562,6 +637,7 @@ class LoginApp(tk.Tk):
         selected_index = next((i for i, role in enumerate(roles) if str(role.get("serverId")) == saved_server), 0)
         select_index(selected_index)
         self._append_log("登录状态有效，角色数据加载完成。")
+        self._start_game_monitor()
 
     def _show_role_view(self, login_path: Path, roles: list[dict[str, Any]], role: dict[str, Any]) -> None:
         if not role:
@@ -624,6 +700,7 @@ class LoginApp(tk.Tk):
         if not confirmed:
             return
         self.chop_button.state(["disabled"])
+        self._stop_game_monitor()
         self.role_status_var.set("正在连接角色并执行砍树任务...")
         self._append_log(f"开始任务：{role.get('serverName')} / {role.get('nickName')}，计划砍树 {count} 次。")
 
@@ -638,7 +715,8 @@ class LoginApp(tk.Tk):
                 )
                 self.events.put(("chop_success", result))
             except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
-                self.events.put(("chop_error", str(exc)))
+                event = "game_disconnected" if self._is_disconnect_error(exc) else "chop_error"
+                self.events.put((event, f"{type(exc).__name__}: {exc}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -656,6 +734,7 @@ class LoginApp(tk.Tk):
         if not confirmed:
             return
         self.chop_button.state(["disabled"])
+        self._stop_game_monitor()
         self.role_status_var.set("正在执行弟子修炼...")
         self._append_log(f"开始弟子修炼：{role.get('serverName')} / {role.get('nickName')}。")
 
@@ -667,7 +746,8 @@ class LoginApp(tk.Tk):
                 )
                 self.events.put(("pupil_train_success", (result, run_chop_after)))
             except (OSError, ValueError, KeyError, RuntimeError, websocket.WebSocketException) as exc:
-                self.events.put(("pupil_train_error", str(exc)))
+                event = "game_disconnected" if self._is_disconnect_error(exc) else "pupil_train_error"
+                self.events.put((event, f"{type(exc).__name__}: {exc}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -780,6 +860,26 @@ class LoginApp(tk.Tk):
         self.set_status("正在验证上次登录状态...")
         self.refresh_button.state(["disabled"])
 
+        def validate_cached_game_login() -> list[dict[str, Any]]:
+            roles_path = OUTPUT_DIR / "roles-summary.json"
+            roles = json.loads(roles_path.read_text(encoding="utf-8-sig"))
+            if not isinstance(roles, list) or not roles:
+                raise RuntimeError("本地角色缓存不存在")
+            selected_server = str(config.get("selectedServerId", ""))
+            role = next(
+                (item for item in roles if str(item.get("serverId", "")) == selected_server),
+                roles[0],
+            )
+            server_id = int(role["serverId"])
+            game_login = json.loads(
+                (OUTPUT_DIR / f"player-login-{server_id}.json").read_text(encoding="utf-8-sig")
+            )
+            with GameSession(
+                str(game_login["wsAddress"]), int(game_login["playerId"]), str(game_login["token"]),
+            ):
+                pass
+            return roles
+
         def worker() -> None:
             try:
                 game_data = fetch_game_data(token, config["ctoken"], OUTPUT_DIR)
@@ -789,12 +889,35 @@ class LoginApp(tk.Tk):
                     save_json(OUTPUT_DIR, "login-success.json", {"success": True, "data": {"token": token, "userId": ""}})
                 self.events.put(("cached_success", (login_path, roles)))
             except (requests.RequestException, RuntimeError, KeyError, TypeError, OSError, ValueError) as exc:
-                self.events.put(("cached_invalid", str(exc)))
+                try:
+                    roles = validate_cached_game_login()
+                    if not login_path.exists():
+                        save_json(
+                            OUTPUT_DIR, "login-success.json",
+                            {"success": True, "data": {"token": token, "userId": ""}},
+                        )
+                    self.events.put(("cached_success", (login_path, roles)))
+                except (
+                    OSError, RuntimeError, TimeoutError, KeyError, TypeError, ValueError,
+                    json.JSONDecodeError, websocket.WebSocketException,
+                ) as cached_exc:
+                    self.events.put((
+                        "cached_invalid",
+                        f"平台 Token 验证失败：{exc}；本地游戏 Token 验证失败：{cached_exc}",
+                    ))
 
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()
 
+    def relogin(self) -> None:
+        """Reuse a valid local session token before falling back to QR login."""
+        self._stop_game_monitor()
+        self._show_login_view()
+        self.set_status("正在验证本地登录凭证...")
+        self.restore_session()
+
     def start_login(self) -> None:
+        self._stop_game_monitor()
         self._show_login_view()
         if self.worker and self.worker.is_alive():
             self.stop_event.set()
@@ -914,10 +1037,36 @@ class LoginApp(tk.Tk):
                         f"Login succeeded and was saved to:\n{path}\n\nGame data error:\n{error}",
                         parent=self,
                     )
+                elif event == "game_connected":
+                    self.game_connected = True
+                    if hasattr(self, "connection_status_label") and self.connection_status_label.winfo_exists():
+                        self.connection_status_label.configure(text="●  已连接游戏", fg="#25a86f")
+                    if hasattr(self, "relogin_button") and self.relogin_button.winfo_exists():
+                        self.relogin_button.pack_forget()
+                elif event == "game_disconnected":
+                    if self.game_connected:
+                        self.game_connected = False
+                        self._append_log(
+                            f"检测到账号在别处登录，游戏连接已断开。请点击“重新登录”恢复连接。（{value}）"
+                        )
+                    if hasattr(self, "connection_status_label") and self.connection_status_label.winfo_exists():
+                        self.connection_status_label.configure(text="●  账号在别处登录，已断开", fg="#dc4b4b")
+                    if hasattr(self, "relogin_button") and self.relogin_button.winfo_exists():
+                        self.relogin_button.pack(side="right", padx=4, pady=7, before=self.connection_status_label)
+                    if hasattr(self, "chop_button") and self.chop_button.winfo_exists():
+                        self.chop_button.state(["!disabled"])
+                    if self.role_status_var is not None:
+                        self.role_status_var.set("账号在别处登录，游戏连接已断开。")
+                elif event == "game_monitor_error":
+                    self.game_connected = False
+                    if hasattr(self, "connection_status_label") and self.connection_status_label.winfo_exists():
+                        self.connection_status_label.configure(text="●  连接监测暂不可用", fg="#8a989d")
+                    self._append_log(f"游戏连接监测暂时失败，未判定为异地登录。（{value}）")
                 elif event == "chop_log":
                     self._append_log(str(value))
                 elif event == "chop_success":
                     self.chop_button.state(["!disabled"])
+                    self._start_game_monitor()
                     reason = value.get("reason")
                     completed = value.get("completed", 0)
                     if reason == "finished":
@@ -937,11 +1086,14 @@ class LoginApp(tk.Tk):
                         self._append_log(f"任务停止：{reason}，服务器返回 {value.get('ret')}。")
                 elif event == "chop_error":
                     self.chop_button.state(["!disabled"])
+                    self._start_game_monitor()
                     self.role_status_var.set(f"砍树失败：{value}")
                     self._append_log(f"连接或请求失败：{value}")
                 elif event == "pupil_train_success":
                     result, run_chop_after = value
                     self.chop_button.state(["!disabled"])
+                    if not run_chop_after:
+                        self._start_game_monitor()
                     completed = result.get("completed", 0)
                     reason = result.get("reason")
                     if completed:
@@ -956,6 +1108,7 @@ class LoginApp(tk.Tk):
                         self.after(100, self._confirm_chop_tree)
                 elif event == "pupil_train_error":
                     self.chop_button.state(["!disabled"])
+                    self._start_game_monitor()
                     self.role_status_var.set(f"弟子修炼失败：{value}")
                     self._append_log(f"弟子修炼连接或请求失败：{value}")
                 elif event == "expired":
@@ -974,6 +1127,7 @@ class LoginApp(tk.Tk):
 
     def close(self) -> None:
         self.stop_event.set()
+        self._stop_game_monitor()
         self.destroy()
 
 

@@ -8,6 +8,7 @@ import re
 import struct
 import threading
 import time
+from contextlib import nullcontext
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
@@ -131,14 +132,17 @@ MAGIC_SYNC = 4400
 MAGIC_DERIVATION = 24408
 MAGIC_DERIVATION_RESPONSE = 4408
 MAGIC_FREE_DAILY_MAX = 2
-MAGIC_NORMAL_FREE_MAX = 1
+MAGIC_NORMAL_FREE_MAX = 2
 MAGIC_TICKET_ITEM = 100044
 SPIRIT_SYNC = 821
+SPIRIT_STATE_REQUEST = 20821
 SPIRIT_DRAW = 20822
 SPIRIT_DRAW_RESPONSE = 822
 SPIRIT_FREE_DAILY_MAX = 2
 SPIRIT_TICKET_ITEM = 100023
 LAW_LOOKS_LOGIN_SYNC = 18711
+LAW_LOOKS_ENTER = 218701
+LAW_LOOKS_ENTER_RESPONSE = 18701
 LAW_LOOKS_DRAW = 218709
 LAW_LOOKS_DRAW_RESPONSE = 18709
 LAW_LOOKS_FREE_DAILY_MAX = 2
@@ -147,7 +151,7 @@ PET_KERNEL_DRAW = 211706
 PET_KERNEL_DRAW_RESPONSE = 11706
 PET_KERNEL_STATE_REQUEST = 211708
 PET_KERNEL_STATE_RESPONSE = 11708
-PET_KERNEL_FREE_DAILY_MAX = 2
+PET_KERNEL_FREE_DAILY_MAX = 1
 PET_KERNEL_DRAW_ITEM = 100100
 UNIVERSE_STATE_REQUEST = 214302
 UNIVERSE_STATE_RESPONSE = 14302
@@ -172,10 +176,42 @@ TOWER_DEFAULT_PREFERENCES = (1017, 1018, 1023, 1024, 1022)
 STAGE_SYNC = 403
 STAGE_CHALLENGE = 20402
 STAGE_CHALLENGE_RESPONSE = 402
+SKY_WAR_ENTER = 208401
+SKY_WAR_ENTER_RESPONSE = 8401
+SKY_WAR_REFRESH_ENEMY = 208402
+SKY_WAR_REFRESH_ENEMY_RESPONSE = 8402
+SKY_WAR_FIGHT = 208403
+SKY_WAR_FIGHT_RESPONSE = 8403
+SKY_WAR_LOGIN_SYNC = 8414
+TASK_SYNC = 502
+TASK_GET_REWARD = 20503
+TASK_GET_REWARD_RESPONSE = 503
+MAIL_GET_ALL_REWARD = 20555
+MAIL_GET_ALL_REWARD_RESPONSE = 555
+SKY_WAR_DAILY_MAX = 5
+CAVE_TRIAL_PLAYER_DATA = 232801
+CAVE_TRIAL_PLAYER_DATA_RESPONSE = 32801
+CAVE_TRIAL_GET_TICKET = 232802
+CAVE_TRIAL_GET_TICKET_RESPONSE = 32802
+CAVE_TRIAL_BATTLE = 232804
+CAVE_TRIAL_BATTLE_RESPONSE = 32804
+CAVE_TRIAL_BATTLE_REWARD = 232805
+CAVE_TRIAL_BATTLE_REWARD_RESPONSE = 32805
+CAVE_TRIAL_DAY_REWARD = 232807
+CAVE_TRIAL_DAY_REWARD_RESPONSE = 32807
+CAVE_TRIAL_PLAYER_DATA_SYNC = 32810
+CAVE_TRIAL_TICKET_ITEM = 100266
+CAVE_TRIAL_WAVE_INTERVAL_SECONDS = 1.5
+CAVE_TRIAL_WAVE_RESPONSE_TIMEOUT_SECONDS = 15.0
+RULE_TRIAL_ONE_KEY_REPEAT = 209103
+RULE_TRIAL_ONE_KEY_REPEAT_RESPONSE = 9103
+RULE_TRIAL_DATA_SYNC = 9105
 DIVINE_INSIGHT_RECEIVE_MIND = 231002
 DIVINE_INSIGHT_RECEIVE_MIND_RESPONSE = 31002
 TREASURE_AUCTION_ENTER = 234001
 TREASURE_AUCTION_ENTER_RESPONSE = 34001
+TREASURE_AUCTION_SELECT_EVENT = 234002
+TREASURE_AUCTION_SELECT_EVENT_RESPONSE = 34002
 TREASURE_AUCTION_BEGIN_EXPLORE = 234004
 TREASURE_AUCTION_BEGIN_EXPLORE_RESPONSE = 34004
 TREASURE_AUCTION_REWARD = 234005
@@ -189,6 +225,17 @@ TREASURE_AUCTION_DISASSEMBLE_RESPONSE = 34011
 TREASURE_AUCTION_GET_HELP_LIST = 234012
 TREASURE_AUCTION_GET_HELP_LIST_RESPONSE = 34012
 FREE_DRAW_INTERVAL_SECONDS = 8.0
+ASSISTANT_ACTION = 230202
+ASSISTANT_ACTION_RESPONSE = 30202
+ASSISTANT_YARD_FREE = 50201
+ASSISTANT_YARD_VIDEO = 50202
+ASSISTANT_MAGIC_FREE = 50301
+ASSISTANT_MAGIC_VIDEO = 50302
+ASSISTANT_MAGIC_TREASURE_FREE = 50401
+ASSISTANT_MAGIC_TREASURE_VIDEO = 50402
+ASSISTANT_LAW_LOOKS_REWARD = 50701
+ASSISTANT_SPIRIT_REWARD = 50801
+ASSISTANT_PUPIL_REWARD = 50901
 MAGIC_TREASURE_STATE_REQUEST = 26301
 MAGIC_TREASURE_SYNC = 6301
 MAGIC_TREASURE_DRAW = 26302
@@ -800,6 +847,9 @@ def parse_spirit_state(payload: bytes) -> dict[str, int]:
 
 def parse_law_looks_state(payload: bytes) -> dict[str, int]:
     fields = parse_protobuf(payload)
+    enter_messages = _children(fields, 2)
+    if enter_messages:
+        fields = enter_messages[0]
     return {
         "freeAdTimes": int((_values(fields, 2) or [0])[0]),
         "freeDrawTimes": int((_values(fields, 3) or [0])[0]),
@@ -914,15 +964,119 @@ def parse_treasure_auction_state(payload: bytes) -> dict[str, Any]:
     player_messages = _children(fields, 2)
     player = player_messages[0] if player_messages else []
     items = [_parse_treasure_item(item) for item in _children(fields, 3)]
-    places = [_parse_treasure_place(place) for place in _children(player, 3)]
+    events = [
+        {
+            "eventId": int((_values(event, 1) or [0])[0]),
+            "configId": int((_values(event, 2) or [0])[0]),
+            "state": int((_values(event, 3) or [0])[0]),
+            "appearance": int((_values(event, 4) or [0])[0]),
+        }
+        for event in _children(player, 3)
+    ]
+    places = [_parse_treasure_place(place) for place in _children(player, 4)]
     return {
         "ret": response_ret(payload),
         "helpCount": int((_values(player, 1) or [0])[0]),
         "treasureCount": int((_values(player, 2) or [0])[0]),
+        "events": events,
         "places": places,
-        "warehouseLimit": int((_values(player, 4) or [0])[0]),
+        "warehouseLimit": int((_values(player, 5) or [0])[0]),
         "items": items,
-        "equipIds": {int(value) for value in _values(player, 10)},
+        "equipIds": {int(value) for value in _values(player, 6)},
+        "lastCreateEventTime": int((_values(player, 12) or [0])[0]),
+    }
+
+
+def parse_task_data(payload: bytes) -> dict[int, dict[str, Any]]:
+    result: dict[int, dict[str, Any]] = {}
+    for entry in _children(parse_protobuf(payload), 1):
+        task_ids = _values(entry, 1)
+        if not task_ids:
+            continue
+        value = next((field.get("text") for field in entry if field["field"] == 2), "0")
+        states = _values(entry, 3)
+        result[int(task_ids[0])] = {
+            "value": str(value), "state": int(states[0]) if states else 0,
+        }
+    return result
+
+
+def _sky_war_opponents(fields: list[dict[str, Any]]) -> list[dict[str, int]]:
+    groups: list[tuple[int, list[dict[str, int]]]] = []
+    for field_number in sorted({field["field"] for field in fields if "children" in field}):
+        opponents: list[dict[str, int]] = []
+        seen: set[tuple[int, int]] = set()
+        entries = _children(fields, field_number)
+        extra_fields = 0
+        for position, entry in enumerate(entries):
+            extra_fields += sum(1 for field in entry if field["field"] != 1)
+            player_data = _children(entry, 1)
+            base_data = _children(player_data[0], 1) if player_data else []
+            if base_data:
+                player_ids = _values(base_data[0], 1)
+                server_ids = _values(base_data[0], 8)
+                if player_ids and server_ids:
+                    key = (int(player_ids[0]), int(server_ids[0]))
+                    encoded_server_id = key[0] // 1_000_000
+                    if key not in seen and encoded_server_id == key[1]:
+                        seen.add(key)
+                        opponents.append({
+                            "playerId": key[0], "serverId": key[1], "position": position,
+                        })
+        if opponents:
+            groups.append((extra_fields, opponents))
+    candidates = [group for extra_fields, group in groups if len(group) == 3]
+    if not candidates:
+        return []
+    return min(
+        (item for item in groups if len(item[1]) == 3),
+        key=lambda item: item[0],
+    )[1]
+
+
+def parse_sky_war_state(payload: bytes) -> dict[str, Any]:
+    fields = parse_protobuf(payload)
+    battle_times = _values(fields, 2)
+    return {
+        "ret": response_ret(payload),
+        "battleTimes": int(battle_times[0]) if battle_times else 0,
+        "opponents": _sky_war_opponents(fields),
+    }
+
+
+def parse_cave_trial_state(payload: bytes) -> dict[str, int]:
+    fields = parse_protobuf(payload)
+    embedded = _children(fields, 2)
+    data = embedded[0] if embedded else fields
+    value = lambda field, default=0: int((_values(data, field) or [default])[0])
+    return {
+        "curLevel": value(2, 1),
+        "ticketCount": value(1),
+        "selectPos": value(5),
+        "freeTicket": value(6),
+        "dayRewardCount": value(7),
+        "weekTake": value(8),
+        "inscriptionStar": value(9),
+    }
+
+
+def parse_cave_trial_battle(payload: bytes) -> dict[str, Any]:
+    fields = parse_protobuf(payload)
+    return {
+        "ret": response_ret(payload),
+        "wave": int((_values(fields, 2) or [1])[0]),
+        "isWin": bool((_values(fields, 5) or [0])[0]),
+        "isEnd": bool((_values(fields, 6) or [1])[0]),
+        "payloadHex": payload.hex(),
+    }
+
+
+def parse_rule_trial_state(payload: bytes) -> dict[str, Any]:
+    fields = parse_protobuf(payload)
+    return {
+        "totalChallengeTimes": int((_values(fields, 2) or [0])[0]),
+        "bestBossId": int((_values(fields, 3) or [0])[0]),
+        "isRepeated": bool((_values(fields, 4) or [0])[0]),
     }
 
 
@@ -998,8 +1152,16 @@ class GameSession:
         if self.socket is None:
             raise RuntimeError("Game session is not connected")
         frames: list[tuple[int, bytes]] = []
+        deadline = time.monotonic() + self.timeout
         for _ in range(timeout_messages):
-            data = self.socket.recv()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self.socket.settimeout(remaining)
+            try:
+                data = self.socket.recv()
+            except websocket.WebSocketTimeoutException as exc:
+                raise TimeoutError("Timed out waiting for game login synchronization") from exc
             if not isinstance(data, bytes):
                 continue
             message_id, player_id, payload = parse_frame(data)
@@ -1008,13 +1170,26 @@ class GameSession:
             frames.append((message_id, payload))
             if message_id == LOGIN_SYNC_OVER:
                 return frames
-        raise RuntimeError("Timed out waiting for game login synchronization")
+        raise TimeoutError("Timed out waiting for game login synchronization")
 
-    def _wait_for(self, target_message_id: int, timeout_messages: int = 100) -> bytes:
+    def _wait_for(
+        self, target_message_id: int, timeout_messages: int = 100,
+        timeout: float | None = None,
+    ) -> bytes:
         if self.socket is None:
             raise RuntimeError("Game session is not connected")
+        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
         for _ in range(timeout_messages):
-            data = self.socket.recv()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self.socket.settimeout(remaining)
+            try:
+                data = self.socket.recv()
+            except websocket.WebSocketTimeoutException as exc:
+                raise TimeoutError(
+                    f"Timed out waiting for game message {target_message_id}"
+                ) from exc
             if not isinstance(data, bytes):
                 continue
             message_id, player_id, payload = parse_frame(data)
@@ -1022,9 +1197,12 @@ class GameSession:
                 self.observed_frames.append((message_id, payload))
             if player_id == self.player_id and message_id == target_message_id:
                 return payload
-        raise RuntimeError(f"Timed out waiting for game message {target_message_id}")
+        raise TimeoutError(f"Timed out waiting for game message {target_message_id}")
 
-    def _request(self, message_id: int, response_id: int, payload: bytes = b"") -> bytes:
+    def _request(
+        self, message_id: int, response_id: int, payload: bytes = b"",
+        timeout: float | None = None,
+    ) -> bytes:
         if self.socket is None:
             self.connect()
         assert self.socket is not None
@@ -1033,7 +1211,7 @@ class GameSession:
             if self.socket is None:
                 raise RuntimeError("Game session is not connected")
             self.socket.send_binary(make_frame(message_id, self.player_id, payload))
-        return self._wait_for(response_id)
+        return self._wait_for(response_id, timeout=timeout)
 
     def get_pending_equipment(self) -> list[dict[str, Any]]:
         return parse_equipment(self._request(GET_PENDING_EQUIPMENT, GET_PENDING_EQUIPMENT_RESPONSE))
@@ -1213,6 +1391,134 @@ class GameSession:
             "payloadHex": response.hex(),
         }
 
+    def task_data(self) -> dict[int, dict[str, Any]]:
+        tasks: dict[int, dict[str, Any]] = {}
+        for message_id, payload in self.observed_frames:
+            if message_id == TASK_SYNC:
+                tasks.update(parse_task_data(payload))
+        return tasks
+
+    def sky_war_enter(self) -> dict[str, Any]:
+        response = self._request(
+            SKY_WAR_ENTER, SKY_WAR_ENTER_RESPONSE,
+            protobuf_int(1, self.player_id),
+        )
+        return parse_sky_war_state(response)
+
+    def sky_war_remaining_times(self) -> int | None:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == SKY_WAR_LOGIN_SYNC:
+                values = _values(parse_protobuf(payload), 1)
+                return int(values[0]) if values else 0
+        return None
+
+    def sky_war_refresh_enemies(self) -> dict[str, Any]:
+        response = self._request(
+            SKY_WAR_REFRESH_ENEMY, SKY_WAR_REFRESH_ENEMY_RESPONSE,
+            protobuf_int(1, self.player_id),
+        )
+        return parse_sky_war_state(response)
+
+    def sky_war_fight(self, opponent: dict[str, int]) -> dict[str, Any]:
+        payload = (
+            protobuf_int(1, self.player_id)
+            + protobuf_int(2, opponent["playerId"])
+            + protobuf_int(3, opponent["serverId"])
+            + protobuf_int(4, opponent["position"])
+        )
+        response = self._request(SKY_WAR_FIGHT, SKY_WAR_FIGHT_RESPONSE, payload)
+        times = _values(parse_protobuf(response), 2)
+        return {
+            "ret": response_ret(response),
+            "battleTimes": int(times[0]) if times else None,
+            "payloadHex": response.hex(),
+        }
+
+    def claim_task_reward(self, task_id: int) -> dict[str, Any]:
+        response = self._request(
+            TASK_GET_REWARD, TASK_GET_REWARD_RESPONSE,
+            protobuf_int(1, task_id),
+        )
+        rewards = next(
+            (field.get("text") for field in parse_protobuf(response) if field["field"] == 2), None,
+        )
+        return {"ret": response_ret(response), "rewards": rewards, "payloadHex": response.hex()}
+
+    def cave_trial_state(self, refresh: bool = True) -> dict[str, int]:
+        if refresh:
+            response = self._request(CAVE_TRIAL_PLAYER_DATA, CAVE_TRIAL_PLAYER_DATA_RESPONSE)
+            if response_ret(response) == 0:
+                return parse_cave_trial_state(response)
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == CAVE_TRIAL_PLAYER_DATA_SYNC:
+                return parse_cave_trial_state(payload)
+        return {
+            "curLevel": 1, "ticketCount": 0, "selectPos": 0, "freeTicket": 0,
+            "dayRewardCount": 0, "weekTake": 0, "inscriptionStar": 0,
+        }
+
+    def cave_trial_get_ticket(self) -> dict[str, Any]:
+        response = self._request(CAVE_TRIAL_GET_TICKET, CAVE_TRIAL_GET_TICKET_RESPONSE)
+        free_ticket = _values(parse_protobuf(response), 2)
+        return {
+            "ret": response_ret(response),
+            "freeTicket": int(free_ticket[0]) if free_ticket else 0,
+            "payloadHex": response.hex(),
+        }
+
+    def cave_trial_day_reward(self) -> dict[str, Any]:
+        response = self._request(CAVE_TRIAL_DAY_REWARD, CAVE_TRIAL_DAY_REWARD_RESPONSE)
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def cave_trial_battle(self, level: int, wave: int = 1) -> dict[str, Any]:
+        payload = protobuf_int(1, level) + protobuf_int(2, wave)
+        if wave == 1:
+            payload += protobuf_int(3, 1)
+        response = self._request(
+            CAVE_TRIAL_BATTLE, CAVE_TRIAL_BATTLE_RESPONSE, payload,
+            timeout=CAVE_TRIAL_WAVE_RESPONSE_TIMEOUT_SECONDS,
+        )
+        return parse_cave_trial_battle(response)
+
+    def cave_trial_battle_reward(self, won: bool) -> dict[str, Any]:
+        response = self._request(
+            CAVE_TRIAL_BATTLE_REWARD, CAVE_TRIAL_BATTLE_REWARD_RESPONSE,
+            protobuf_int(1, int(won)),
+        )
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def rule_trial_state(self) -> dict[str, Any] | None:
+        for message_id, payload in reversed(self.observed_frames):
+            if message_id == RULE_TRIAL_DATA_SYNC:
+                return parse_rule_trial_state(payload)
+        return None
+
+    def rule_trial_quick_repeat(self) -> dict[str, Any]:
+        response = self._request(
+            RULE_TRIAL_ONE_KEY_REPEAT, RULE_TRIAL_ONE_KEY_REPEAT_RESPONSE,
+        )
+        rewards = next(
+            (
+                field["raw"].decode("utf-8")
+                for field in parse_protobuf(response)
+                if field["field"] == 2 and "raw" in field
+            ),
+            None,
+        )
+        return {"ret": response_ret(response), "rewards": rewards, "payloadHex": response.hex()}
+
+    def claim_all_mail_rewards(self) -> dict[str, Any]:
+        response = self._request(MAIL_GET_ALL_REWARD, MAIL_GET_ALL_REWARD_RESPONSE)
+        rewards = next(
+            (
+                field["raw"].decode("utf-8")
+                for field in parse_protobuf(response)
+                if field["field"] == 2 and "raw" in field
+            ),
+            None,
+        )
+        return {"ret": response_ret(response), "rewards": rewards, "payloadHex": response.hex()}
+
     def enter_yard(self) -> dict[str, Any]:
         response = self._request(
             YARD_ENTER, YARD_ENTER_RESPONSE,
@@ -1265,8 +1571,8 @@ class GameSession:
     def yard_draw(self, ten: bool = False, is_ad: bool = False) -> dict[str, Any]:
         payload = (
             protobuf_int(1, int(ten))
-            + protobuf_int(2, int(is_ad))
-            + protobuf_int(3, 0)
+            + protobuf_int(2, 0)
+            + protobuf_int(3, int(is_ad))
             + protobuf_int(4, 0)
         )
         response = self._request(YARD_DRAW, YARD_DRAW_RESPONSE, payload)
@@ -1357,8 +1663,8 @@ class GameSession:
             "payloadHex": response.hex(),
         }
 
-    def talent_deal(self, index: int, action: int) -> dict[str, Any]:
-        if index < 0 or action not in (1, 2):
+    def talent_deal(self, index: int, action: int, god_body_id: int = 0) -> dict[str, Any]:
+        if index < 0 or action not in (0, 1) or god_body_id < 0:
             raise ValueError("Invalid talent processing parameters")
         response = self._request(
             TALENT_DEAL, TALENT_DEAL_RESPONSE,
@@ -1391,10 +1697,13 @@ class GameSession:
     def magic_free_draw(self) -> dict[str, Any]:
         return self.magic_draw(1, is_ad=True)
 
-    def spirit_state(self) -> dict[str, int] | None:
+    def spirit_state(self, refresh: bool = True) -> dict[str, int] | None:
         for message_id, payload in reversed(self.observed_frames):
-            if message_id in (SPIRIT_SYNC, SPIRIT_DRAW_RESPONSE):
+            if message_id == SPIRIT_SYNC:
                 return parse_spirit_state(payload)
+        if refresh:
+            response = self._request(SPIRIT_STATE_REQUEST, SPIRIT_SYNC)
+            return parse_spirit_state(response)
         return None
 
     def spirit_draw(self, count: int = 1, is_ad: bool = False) -> dict[str, Any]:
@@ -1421,10 +1730,15 @@ class GameSession:
     def spirit_free_draw(self) -> dict[str, Any]:
         return self.spirit_draw(1, is_ad=True)
 
-    def law_looks_state(self) -> dict[str, int] | None:
+    def law_looks_state(self, refresh: bool = True) -> dict[str, int] | None:
         for message_id, payload in reversed(self.observed_frames):
             if message_id == LAW_LOOKS_LOGIN_SYNC:
                 return parse_law_looks_state(payload)
+        if refresh:
+            response = self._request(LAW_LOOKS_ENTER, LAW_LOOKS_ENTER_RESPONSE)
+            if response_ret(response) != 0:
+                return None
+            return parse_law_looks_state(response)
         return None
 
     def law_looks_draw(self, count: int = 1, draw_type: int = 2) -> dict[str, Any]:
@@ -1436,13 +1750,10 @@ class GameSession:
         )
         return {"ret": response_ret(response), "payloadHex": response.hex()}
 
-    def pet_kernel_state(self, refresh: bool = True) -> dict[str, int] | None:
+    def pet_kernel_state(self, refresh: bool = False) -> dict[str, int] | None:
         for message_id, payload in reversed(self.observed_frames):
             if message_id == PET_KERNEL_STATE_RESPONSE:
                 return parse_pet_kernel_state(payload)
-        if refresh:
-            response = self._request(PET_KERNEL_STATE_REQUEST, PET_KERNEL_STATE_RESPONSE)
-            return parse_pet_kernel_state(response)
         return None
 
     def pet_kernel_draw(self, ten: bool = False) -> dict[str, Any]:
@@ -1577,6 +1888,13 @@ class GameSession:
         response = self._request(TREASURE_AUCTION_REWARD, TREASURE_AUCTION_REWARD_RESPONSE, payload)
         return {"ret": response_ret(response), "payloadHex": response.hex()}
 
+    def treasure_auction_select_event(self, event_id: int, select_index: int = 0) -> dict[str, Any]:
+        response = self._request(
+            TREASURE_AUCTION_SELECT_EVENT, TREASURE_AUCTION_SELECT_EVENT_RESPONSE,
+            protobuf_int(1, event_id) + protobuf_int(2, select_index),
+        )
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
     def treasure_auction_begin(self, place_id: int) -> dict[str, Any]:
         response = self._request(
             TREASURE_AUCTION_BEGIN_EXPLORE, TREASURE_AUCTION_BEGIN_EXPLORE_RESPONSE,
@@ -1631,6 +1949,14 @@ class GameSession:
         elif item_id > 0:
             payload += protobuf_int(5, item_id)
         response = self._request(MAGIC_TREASURE_DRAW, MAGIC_TREASURE_DRAW_RESPONSE, payload)
+        return {"ret": response_ret(response), "payloadHex": response.hex()}
+
+    def assistant_action(self, action_type: int, params: list[str] | None = None) -> dict[str, Any]:
+        setting = protobuf_int(1, action_type)
+        for value in params or []:
+            setting += protobuf_string(2, value)
+        payload = protobuf_int(1, 0) + protobuf_message(2, setting)
+        response = self._request(ASSISTANT_ACTION, ASSISTANT_ACTION_RESPONSE, payload)
         return {"ret": response_ret(response), "payloadHex": response.hex()}
 
     def hero_rank_fight(self, rank_change_retries: int = 0) -> dict[str, Any]:
@@ -1752,7 +2078,22 @@ class GameSession:
     def resource_snapshot(self, server_id: int, refresh_wild_boss: bool = False) -> dict[str, Any]:
         if refresh_wild_boss:
             self.wild_boss_remaining(refresh=True)
-        return _snapshot_from_frames(server_id, self.observed_frames)
+        snapshot = _snapshot_from_frames(server_id, self.observed_frames)
+        # These daily counters are not included in the login push stream. Query
+        # their state here so the dashboard is populated before a task starts.
+        try:
+            profession = self.profession_state()
+        except (OSError, RuntimeError, TimeoutError, websocket.WebSocketException):
+            profession = None
+        if profession is not None:
+            snapshot["professionLastBossId"] = profession["lastPassedBossId"]
+            snapshot["professionQuickRemaining"] = max(
+                0, PROFESSION_QUICK_DAILY_MAX - profession["repeatTimesToday"]
+            )
+            snapshot["professionChallengeRemaining"] = max(
+                0, PROFESSION_CHALLENGE_DAILY_MAX - profession["battleTimesToday"]
+            )
+        return snapshot
 
     def close(self) -> None:
         self._heartbeat_stop.set()
@@ -1815,6 +2156,7 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
     snapshot["lawLooksTicketCount"] = inventory.get(LAW_LOOKS_TICKET_ITEM, 0)
     snapshot["petKernelDrawItemCount"] = inventory.get(PET_KERNEL_DRAW_ITEM, 0)
     snapshot["universeSkillDrawItemCount"] = inventory.get(UNIVERSE_SKILL_DRAW_ITEM, 0)
+    snapshot["caveTrialTicketCount"] = inventory.get(CAVE_TRIAL_TICKET_ITEM, 0)
     treasure_state = next(
         (
             parse_magic_treasure_state(payload)
@@ -1827,6 +2169,9 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
         str(pool_id): {
             "freeRemaining": max(
                 0, MAGIC_TREASURE_FREE_MAX - int(treasure_state.get(pool_id, {}).get("freeDrawTimes", 0))
+            ) if pool_id in treasure_state else None,
+            "adFreeRemaining": max(
+                0, MAGIC_TREASURE_FREE_MAX - int(treasure_state.get(pool_id, {}).get("adFreeTimes", 0))
             ) if pool_id in treasure_state else None,
             "itemId": int(treasure_state.get(pool_id, {}).get(
                 "itemId", MAGIC_TREASURE_COMPASS_ITEMS[pool_id]
@@ -1850,6 +2195,14 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
         + max(0, MAGIC_FREE_DAILY_MAX - magic_state["freeAdTimes"])
         if magic_state is not None else None
     )
+    snapshot["magicNormalFreeRemaining"] = (
+        max(0, MAGIC_NORMAL_FREE_MAX - magic_state["freeDrawTimes"])
+        if magic_state is not None else None
+    )
+    snapshot["magicAdFreeRemaining"] = (
+        max(0, MAGIC_FREE_DAILY_MAX - magic_state["freeAdTimes"])
+        if magic_state is not None else None
+    )
     spirit_state = next(
         (
             parse_spirit_state(payload)
@@ -1866,12 +2219,16 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
         (
             parse_law_looks_state(payload)
             for message_id, payload in reversed(frames)
-            if message_id == LAW_LOOKS_LOGIN_SYNC
+            if message_id in (LAW_LOOKS_LOGIN_SYNC, LAW_LOOKS_ENTER_RESPONSE)
         ),
         None,
     )
     snapshot["lawLooksFreeRemaining"] = (
-        max(0, LAW_LOOKS_FREE_DAILY_MAX - law_looks_state["freeAdTimes"])
+        max(0, LAW_LOOKS_FREE_DAILY_MAX - law_looks_state["freeDrawTimes"])
+        if law_looks_state is not None else None
+    )
+    snapshot["lawLooksAdFreeRemaining"] = (
+        max(0, 2 - law_looks_state["freeAdTimes"])
         if law_looks_state is not None else None
     )
     pet_kernel_state = next(
@@ -1922,6 +2279,30 @@ def _snapshot_from_frames(server_id: int, frames: list[tuple[int, bytes]]) -> di
     )
     snapshot["adventureCurrentStage"] = (
         stage_state["passStageId"] + 1 if stage_state is not None else None
+    )
+    sky_war_remaining = next(
+        (
+            int(values[0]) if values else 0
+            for message_id, payload in reversed(frames)
+            if message_id == SKY_WAR_LOGIN_SYNC
+            for values in [_values(parse_protobuf(payload), 1)]
+        ),
+        None,
+    )
+    snapshot["skyWarRemaining"] = sky_war_remaining
+    cave_trial_state = next(
+        (
+            parse_cave_trial_state(payload)
+            for message_id, payload in reversed(frames)
+            if message_id == CAVE_TRIAL_PLAYER_DATA_SYNC
+        ),
+        None,
+    )
+    snapshot["caveTrialCurrentLevel"] = (
+        cave_trial_state["curLevel"] if cave_trial_state is not None else None
+    )
+    snapshot["caveTrialFreeTicket"] = (
+        cave_trial_state["freeTicket"] if cave_trial_state is not None else None
     )
     daily_max = wild_boss_daily_max(frames)
     used_times = next(
@@ -2015,7 +2396,20 @@ def fetch_role_snapshot(server_id: int, output_dir: Path) -> dict[str, Any]:
     """Read currency and player attributes from the login synchronization stream."""
     login = _load_login(server_id, output_dir)
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        try:
+            session.claim_all_mail_rewards()
+        except (OSError, RuntimeError, TimeoutError, websocket.WebSocketException):
+            pass
         return session.resource_snapshot(server_id, refresh_wild_boss=True)
+
+
+def claim_role_mail_rewards(server_id: int, output_dir: Path) -> dict[str, Any]:
+    login = _load_login(server_id, output_dir)
+    try:
+        with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+            return session.claim_all_mail_rewards()
+    except (OSError, RuntimeError, TimeoutError, websocket.WebSocketException) as exc:
+        return {"ret": None, "rewards": None, "reason": type(exc).__name__}
 
 
 def run_wild_boss_tasks(
@@ -2331,8 +2725,8 @@ def run_talent_tasks(
         raise ValueError("Talent total count must be between 0 and 1000")
     if not 1 <= minimum_quality <= 10 or preferred_attribute not in ATTRIBUTE_NAMES:
         raise ValueError("Invalid talent preference")
-    if not 0.5 <= interval <= 60:
-        raise ValueError("Talent draw interval must be between 0.5 and 60 seconds")
+    if not 2 <= interval <= 60:
+        raise ValueError("Talent draw interval must be between 2 and 60 seconds")
     if not 1 <= concurrent_count <= 5:
         raise ValueError("Talent concurrent count must be between 1 and 5")
 
@@ -2358,7 +2752,7 @@ def run_talent_tasks(
                     talent["quality"] >= minimum_quality
                     and preferred_attribute in attribute_types
                 )
-                action = 2 if should_activate else 1
+                action = 0 if should_activate else 1
                 result = session.talent_deal(index, action)
                 if result["ret"] != 0:
                     log(f"灵脉处理失败，服务端返回 {result['ret']}。")
@@ -2412,15 +2806,23 @@ def run_talent_tasks(
                 f"本次总次数选择 {total_text}，同时次数 {concurrent_count}，"
                 f"实际最多激发 {draw_target} 次。"
             )
+            effective_concurrent_count = concurrent_count
             while grass_remaining > 0 and draw_completed < draw_target:
                 if stop_event is not None and stop_event.is_set():
                     return {
                         "ret": 0, "completed": activated + resolved,
                         "remaining": grass_remaining, "reason": "stopped",
                     }
-                batch_count = min(concurrent_count, draw_target - draw_completed, grass_remaining)
+                batch_count = min(effective_concurrent_count, draw_target - draw_completed, grass_remaining)
                 result = session.talent_random(batch_count)
                 if result["ret"] != 0:
+                    if result["ret"] == 1201 and effective_concurrent_count > 1:
+                        effective_concurrent_count = 1
+                        log(
+                            "灵脉批量激发被服务端拒绝（1201），"
+                            "已自动降级为每次激发 1 条并继续。"
+                        )
+                        continue
                     if result["ret"] == 30:
                         log(f"灵脉激发频率过快，请将间隔调高（当前 {interval:g} 秒）。")
                     return {
@@ -2457,44 +2859,30 @@ def run_magic_draw_tasks(
     snapshot: Callable[[dict[str, Any]], None] | None = None,
     paid_count: int = 0,
 ) -> dict[str, Any]:
-    if not 0 <= count <= MAGIC_NORMAL_FREE_MAX + MAGIC_FREE_DAILY_MAX or not 0 <= paid_count <= 100:
+    if not 0 <= paid_count <= 100:
         raise ValueError("Invalid magic draw count")
-    if count == 0 and paid_count == 0:
-        return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
     login = _load_login(server_id, output_dir)
     free_completed = 0
     paid_completed = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
         state = session.magic_state()
-        if state is None:
-            free_modes = [False] + [True] * count
-            log(f"神通免费次数未同步，本次免费选择 {count} 次，由服务端校验额度。")
-        else:
-            normal_free = max(0, MAGIC_NORMAL_FREE_MAX - state["freeDrawTimes"])
-            ad_free = max(0, MAGIC_FREE_DAILY_MAX - state["freeAdTimes"])
-            free_modes = ([False] * normal_free + [True] * ad_free)[:count]
-            log(f"神通当前免费可用 {normal_free + ad_free}/3 次，本次免费选择 {count} 次。")
-        for mode_index, is_ad in enumerate(free_modes):
-            if free_completed >= count:
-                break
+        if state is not None:
+            log(
+                f"神通广告免费剩余 {max(0, MAGIC_FREE_DAILY_MAX - state['freeAdTimes'])}/2，"
+                f"本次免费剩余 {max(0, MAGIC_NORMAL_FREE_MAX - state['freeDrawTimes'])}/2。"
+            )
+        for index, (action_type, name) in enumerate((
+            (ASSISTANT_MAGIC_VIDEO, "广告免费"),
+            (ASSISTANT_MAGIC_FREE, "本次免费"),
+        )):
             if stop_event is not None and stop_event.is_set():
-                return {"ret": 0, "completed": free_completed + paid_completed, "remaining": 0, "reason": "stopped"}
-            result = session.magic_draw(1, is_ad=is_ad)
-            if result["ret"] == (4415 if is_ad else 4419):
-                if is_ad:
-                    break
-                continue
-            if result["ret"] != 0:
-                return {
-                    "ret": result["ret"], "completed": free_completed + paid_completed,
-                    "remaining": 0, "reason": "magic_draw_failed",
-                }
+                return {"ret": 0, "completed": free_completed, "remaining": 0, "reason": "stopped"}
+            result = session.assistant_action(action_type)
+            if result["ret"] not in (0, None):
+                return {"ret": result["ret"], "completed": free_completed, "remaining": 0, "reason": "magic_draw_failed"}
             free_completed += 1
-            if result["magicIds"]:
-                log(f"第 {free_completed}/{count} 次免费获取神通完成，神通 ID {result['magicIds'][0]}。")
-            else:
-                log(f"第 {free_completed}/{count} 次免费获取神通完成。")
-            if free_completed < count and mode_index + 1 < len(free_modes):
+            log(f"神通{name}福利已执行。")
+            if index == 0:
                 time.sleep(FREE_DRAW_INTERVAL_SECONDS)
 
         ticket_available = session.item_count(MAGIC_TICKET_ITEM)
@@ -2523,34 +2911,28 @@ def run_spirit_draw_tasks(
 ) -> dict[str, Any]:
     if not 0 <= count <= SPIRIT_FREE_DAILY_MAX or not 0 <= paid_count <= 100:
         raise ValueError("Invalid spirit draw count")
-    if count == 0 and paid_count == 0:
-        return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
     login = _load_login(server_id, output_dir)
-    completed = 0
+    free_completed = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
         state = session.spirit_state()
-        available = count if state is None else max(0, SPIRIT_FREE_DAILY_MAX - state["freeAdTimes"])
-        target = min(count, available)
-        log(f"精怪当前免费可用 {available if state is not None else '--'}/2 次，本次免费选择 {count} 次。")
-        for index in range(target):
+        ad_remaining = max(0, SPIRIT_FREE_DAILY_MAX - state["freeAdTimes"]) if state else None
+        log(f"精怪广告免费剩余 {ad_remaining if ad_remaining is not None else '--'}/2。")
+        ad_target = min(count, ad_remaining) if ad_remaining is not None else count
+        for index in range(ad_target):
             if stop_event is not None and stop_event.is_set():
-                return {"ret": 0, "completed": completed, "remaining": available - completed, "reason": "stopped"}
+                return {
+                    "ret": 0, "completed": free_completed,
+                    "remaining": ad_target - free_completed, "reason": "stopped",
+                }
             result = session.spirit_free_draw()
-            if result["ret"] == 1111:
-                log("精怪今日广告免费召唤次数已用完。")
-                available = completed
-                break
             if result["ret"] != 0:
                 return {
-                    "ret": result["ret"], "completed": completed,
-                    "remaining": available - completed, "reason": "spirit_draw_failed",
+                    "ret": result["ret"], "completed": free_completed,
+                    "remaining": ad_target - free_completed, "reason": "spirit_draw_failed",
                 }
-            completed += 1
-            if result["spiritIds"]:
-                log(f"第 {completed}/{target} 次免费召唤精怪完成，精怪 ID {result['spiritIds'][0]}。")
-            else:
-                log(f"第 {completed}/{target} 次免费召唤精怪完成。")
-            if index + 1 < target:
+            free_completed += 1
+            log(f"精怪广告免费完成 {free_completed}/{ad_target} 次。")
+            if index + 1 < ad_target:
                 time.sleep(FREE_DRAW_INTERVAL_SECONDS)
         ticket_available = session.item_count(SPIRIT_TICKET_ITEM)
         paid_target = min(paid_count, ticket_available)
@@ -2559,15 +2941,15 @@ def run_spirit_draw_tasks(
         if paid_target > 0:
             result = session.spirit_draw(paid_target)
             if result["ret"] != 0:
-                return {"ret": result["ret"], "completed": completed, "remaining": ticket_available, "reason": "spirit_paid_draw_failed"}
+                return {"ret": result["ret"], "completed": free_completed, "remaining": ticket_available, "reason": "spirit_paid_draw_failed"}
             paid_completed = paid_target
             log(f"消耗召唤令召唤精怪完成，共执行 {paid_completed} 次。")
         if snapshot is not None:
             snapshot(session.resource_snapshot(server_id))
         return {
-            "ret": 0, "completed": completed + paid_completed,
+            "ret": 0, "completed": free_completed + paid_completed,
             "remaining": max(0, ticket_available - paid_completed), "reason": "finished",
-            "freeCompleted": completed, "paidCompleted": paid_completed,
+            "freeCompleted": free_completed, "paidCompleted": paid_completed,
         }
 
 
@@ -2577,37 +2959,23 @@ def run_law_looks_draw_tasks(
     snapshot: Callable[[dict[str, Any]], None] | None = None,
     paid_count: int = 0,
 ) -> dict[str, Any]:
-    if not 0 <= count <= LAW_LOOKS_FREE_DAILY_MAX or not 0 <= paid_count <= 100:
+    if not 0 <= paid_count <= 100:
         raise ValueError("Invalid law looks draw count")
-    if count == 0 and paid_count == 0:
-        return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
     login = _load_login(server_id, output_dir)
     free_completed = 0
     paid_completed = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
         state = session.law_looks_state()
-        available = count if state is None else max(
-            0, LAW_LOOKS_FREE_DAILY_MAX - state["freeAdTimes"]
-        )
-        target = min(count, available)
-        shown_available = str(available) if state is not None else "--"
-        log(f"法象当前免费可用 {shown_available}/2 次，本次免费选择 {count} 次。")
-        for index in range(target):
-            if stop_event is not None and stop_event.is_set():
-                return {
-                    "ret": 0, "completed": free_completed,
-                    "remaining": available - free_completed, "reason": "stopped",
-                }
-            result = session.law_looks_draw(1, draw_type=0)
-            if result["ret"] != 0:
-                return {
-                    "ret": result["ret"], "completed": free_completed,
-                    "remaining": available - free_completed, "reason": "law_looks_free_draw_failed",
-                }
-            free_completed += 1
-            log(f"第 {free_completed}/{target} 次免费召唤法象完成。")
-            if index + 1 < target:
-                time.sleep(FREE_DRAW_INTERVAL_SECONDS)
+        if state is not None:
+            log(
+                f"法象广告免费剩余 {max(0, 2 - state['freeAdTimes'])}/2，"
+                f"本次免费剩余 {max(0, LAW_LOOKS_FREE_DAILY_MAX - state['freeDrawTimes'])}/2。"
+            )
+        result = session.assistant_action(ASSISTANT_LAW_LOOKS_REWARD)
+        if result["ret"] not in (0, None):
+            return {"ret": result["ret"], "completed": 0, "remaining": 0, "reason": "law_looks_free_draw_failed"}
+        free_completed = 1
+        log("法象广告免费及本次免费福利已执行。")
 
         ticket_available = session.item_count(LAW_LOOKS_TICKET_ITEM)
         paid_target = min(paid_count, ticket_available)
@@ -2653,7 +3021,7 @@ def run_pet_kernel_draw_tasks(
         )
         target = min(count, available)
         shown_available = str(available) if state is not None else "--"
-        log(f"灵兽内丹当前免费可用 {shown_available}/2 次，本次免费选择 {count} 次。")
+        log(f"灵兽内丹当前免费可用 {shown_available}/1 次，本次免费选择 {count} 次。")
         for index in range(target):
             if stop_event is not None and stop_event.is_set():
                 return {
@@ -2799,11 +3167,315 @@ def run_universe_wheel_draw_tasks(
         }
 
 
+def run_rule_trial_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if count != 1:
+        raise ValueError("Rule trial quick battle runs once")
+    login = _load_login(server_id, output_dir)
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        state = session.rule_trial_state()
+        if state is not None:
+            if state["bestBossId"] <= 0:
+                log("法则试炼尚无已通关关卡，当前无法速战。")
+                return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
+            if state["isRepeated"]:
+                log("法则试炼今日速战奖励已经领取。")
+                return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
+        if stop_event is not None and stop_event.is_set():
+            return {"ret": 0, "completed": 0, "remaining": 1, "reason": "stopped"}
+        result = session.rule_trial_quick_repeat()
+        if result["ret"] != 0:
+            log(f"法则试炼当前不可速战，服务端返回 {result['ret']}。")
+            return {"ret": 0, "completed": 0, "remaining": 0, "reason": "finished"}
+        if result["rewards"]:
+            log(f"法则试炼速战完成并领取奖励：{result['rewards']}。")
+        else:
+            log("法则试炼速战完成，奖励已领取。")
+        if snapshot is not None:
+            snapshot(session.resource_snapshot(server_id))
+        return {"ret": 0, "completed": 1, "remaining": 0, "reason": "finished"}
+
+
+def run_cave_trial_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+    continue_on_loss: bool = True,
+) -> dict[str, Any]:
+    if not 0 <= count <= 100:
+        raise ValueError("Invalid cave trial challenge count")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    attempted = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        state = session.cave_trial_state()
+        if state["freeTicket"] > 0:
+            ticket = session.cave_trial_get_ticket()
+            if ticket["ret"] == 0:
+                log(f"元辰试炼每日挑战次数已领取，获得元辰灵玉 {state['freeTicket']} 个。")
+            elif ticket["ret"] == CAVE_TRIAL_PLAYER_DATA_RESPONSE:
+                log("元辰试炼今日挑战次数已经领取。")
+            else:
+                log(f"元辰试炼每日挑战次数领取失败，服务端返回 {ticket['ret']}。")
+        else:
+            log("元辰试炼今日挑战次数已经领取。")
+
+        daily = session.cave_trial_day_reward()
+        if daily["ret"] == 0:
+            log("元辰试炼每日奖励已领取。")
+        else:
+            log(f"元辰试炼每日奖励当前不可领取，服务端返回 {daily['ret']}。")
+
+        level = max(1, state["curLevel"])
+        local_ticket_count = session.item_count(CAVE_TRIAL_TICKET_ITEM)
+        log(f"元辰试炼计划挑战 {count} 次，当前挑战关卡 {level}，每关最多 6 个小关卡。")
+        while attempted < count:
+            if stop_event is not None and stop_event.is_set():
+                return {
+                    "ret": 0, "completed": completed, "remaining": count - attempted,
+                    "reason": "stopped",
+                }
+            wave = 1
+            won = False
+            while True:
+                log(
+                    f"元辰试炼第 {attempted + 1}/{count} 次挑战："
+                    f"关卡 {level}，第 {wave}/6 波。"
+                )
+                try:
+                    battle = session.cave_trial_battle(level, wave)
+                except TimeoutError:
+                    log(f"元辰试炼关卡 {level} 第 {wave}/6 波等待服务端响应超时，任务已停止。")
+                    return {
+                        "ret": None, "completed": completed,
+                        "remaining": count - attempted, "reason": "cave_trial_wave_timeout",
+                    }
+                if battle["ret"] != 0:
+                    attempted += 1
+                    log(f"元辰试炼挑战未生效，服务端返回 {battle['ret']}，未消耗元辰灵玉。")
+                    if not continue_on_loss:
+                        return {
+                            "ret": battle["ret"], "completed": completed,
+                            "remaining": count - attempted, "reason": "cave_trial_battle_failed",
+                        }
+                    break
+                won = battle["isWin"]
+                wave_result = "胜利" if won else "失败"
+                end_text = "，本关结束" if battle["isEnd"] or not won else "，继续下一波"
+                log(
+                    f"元辰试炼关卡 {level} 第 {wave}/6 波{wave_result}{end_text}。"
+                )
+                if battle["isEnd"] or not won:
+                    break
+                wave = max(wave + 1, battle["wave"] + 1)
+                log(
+                    f"元辰试炼关卡 {level} 将在 "
+                    f"{CAVE_TRIAL_WAVE_INTERVAL_SECONDS:g} 秒后挑战第 {wave}/6 波。"
+                )
+                if stop_event is not None:
+                    if stop_event.wait(CAVE_TRIAL_WAVE_INTERVAL_SECONDS):
+                        return {
+                            "ret": 0, "completed": completed,
+                            "remaining": count - attempted, "reason": "stopped",
+                        }
+                else:
+                    time.sleep(CAVE_TRIAL_WAVE_INTERVAL_SECONDS)
+            if battle["ret"] != 0:
+                if attempted < count:
+                    if stop_event is not None and stop_event.wait(1.0):
+                        return {"ret": 0, "completed": completed, "remaining": count - attempted, "reason": "stopped"}
+                    if stop_event is None:
+                        time.sleep(1.0)
+                continue
+            reward = session.cave_trial_battle_reward(won)
+            if reward["ret"] != 0:
+                return {
+                    "ret": reward["ret"], "completed": completed,
+                    "remaining": count - attempted, "reason": "cave_trial_reward_failed",
+                }
+            attempted += 1
+            result_text = "通关" if won else "未通关"
+            if won:
+                local_ticket_count = max(0, local_ticket_count - 1)
+                completed += 1
+                log(
+                    f"元辰试炼第 {attempted}/{count} 次挑战{result_text}，"
+                    f"关卡 {level}，已消耗 1 个元辰灵玉。"
+                )
+            else:
+                log(
+                    f"元辰试炼第 {attempted}/{count} 次挑战{result_text}，"
+                    f"关卡 {level}，未消耗元辰灵玉。"
+                )
+            state = session.cave_trial_state()
+            if won:
+                level = max(level + 1, state["curLevel"])
+                log(f"元辰试炼已解锁下一关，下一次挑战关卡 {level}。")
+            if snapshot is not None:
+                value = session.resource_snapshot(server_id)
+                value["caveTrialCurrentLevel"] = level
+                value["caveTrialTicketCount"] = local_ticket_count
+                snapshot(value)
+            if not won and not continue_on_loss:
+                return {
+                    "ret": 0, "completed": completed,
+                    "remaining": count - attempted, "reason": "cave_trial_lost",
+                }
+            if attempted < count:
+                if stop_event is not None:
+                    if stop_event.wait(1.0):
+                        return {
+                            "ret": 0, "completed": completed,
+                            "remaining": count - attempted, "reason": "stopped",
+                        }
+                else:
+                    time.sleep(1.0)
+
+        if snapshot is not None:
+            value = session.resource_snapshot(server_id)
+            value["caveTrialCurrentLevel"] = state["curLevel"]
+            value["caveTrialFreeTicket"] = state["freeTicket"]
+            value["caveTrialTicketCount"] = local_ticket_count
+            snapshot(value)
+        return {"ret": 0, "completed": completed, "remaining": 0, "reason": "finished"}
+
+
+def run_sky_war_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    if count != SKY_WAR_DAILY_MAX:
+        raise ValueError("Sky War always uses at most five free attempts")
+    login = _load_login(server_id, output_dir)
+    completed = 0
+    claimed = 0
+    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        before_tasks = session.task_data()
+        state = session.sky_war_enter()
+        if state["ret"] != 0:
+            return {
+                "ret": state["ret"], "completed": 0, "remaining": 0,
+                "reason": "sky_war_enter_failed", "claimed": 0,
+            }
+        synced_remaining = session.sky_war_remaining_times()
+        initial_remaining = min(
+            SKY_WAR_DAILY_MAX,
+            max(0, state["battleTimes"] if synced_remaining is None else synced_remaining),
+        )
+        server_remaining = initial_remaining
+        if snapshot is not None:
+            value = session.resource_snapshot(server_id)
+            value["skyWarRemaining"] = server_remaining
+            snapshot(value)
+        opponents = [
+            opponent for opponent in state["opponents"]
+            if opponent["playerId"] != session.player_id
+        ]
+        log(f"征战诸天免费挑战剩余 {initial_remaining}/5 次，计划完成 {initial_remaining} 次。")
+        if initial_remaining and not opponents:
+            return {
+                "ret": None, "completed": 0, "remaining": initial_remaining,
+                "reason": "sky_war_no_opponent", "claimed": 0,
+            }
+        while server_remaining > 0:
+            if stop_event is not None and stop_event.is_set():
+                return {
+                    "ret": 0, "completed": completed, "remaining": server_remaining,
+                    "reason": "stopped", "claimed": claimed,
+                }
+            opponent = opponents[completed % len(opponents)]
+            log(
+                f"征战诸天准备挑战位置 {opponent['position']}，"
+                f"目标玩家 {opponent['playerId']}，目标区服 {opponent['serverId']}。"
+            )
+            result = session.sky_war_fight(opponent)
+            if result["ret"] != 0:
+                log(f"征战诸天挑战未生效，服务端返回 {result['ret']}，已停止以避免虚假计数。")
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": server_remaining, "reason": "sky_war_fight_failed",
+                    "claimed": claimed,
+                }
+
+            reported_remaining = result.get("battleTimes")
+            refreshed = session.sky_war_enter()
+            if refreshed["ret"] != 0:
+                return {
+                    "ret": refreshed["ret"], "completed": completed,
+                    "remaining": server_remaining, "reason": "sky_war_verify_failed",
+                    "claimed": claimed,
+                }
+            new_remaining = (
+                server_remaining - 1 if reported_remaining is None
+                else min(SKY_WAR_DAILY_MAX, max(0, int(reported_remaining)))
+            )
+            if new_remaining >= server_remaining:
+                log("征战诸天请求返回成功，但服务端挑战次数未减少，已停止以避免虚假计数。")
+                return {
+                    "ret": None, "completed": completed,
+                    "remaining": server_remaining, "reason": "sky_war_not_consumed",
+                    "claimed": claimed,
+                }
+            consumed = server_remaining - new_remaining
+            completed += consumed
+            server_remaining = new_remaining
+            if snapshot is not None:
+                value = session.resource_snapshot(server_id)
+                value["skyWarRemaining"] = server_remaining
+                snapshot(value)
+            opponents = [
+                opponent for opponent in refreshed["opponents"]
+                if opponent["playerId"] != session.player_id
+            ]
+            log(f"征战诸天已确认完成 {completed}/{initial_remaining} 次，服务端剩余 {server_remaining} 次。")
+            if server_remaining and not opponents:
+                return {
+                    "ret": None, "completed": completed, "remaining": server_remaining,
+                    "reason": "sky_war_no_opponent", "claimed": claimed,
+                }
+            if server_remaining:
+                if stop_event is not None:
+                    if stop_event.wait(1.0):
+                        return {
+                            "ret": 0, "completed": completed,
+                            "remaining": server_remaining, "reason": "stopped",
+                            "claimed": claimed,
+                        }
+                else:
+                    time.sleep(1.0)
+
+        after_tasks = session.task_data()
+        changed_task_ids = [
+            task_id for task_id, task in after_tasks.items()
+            if task["state"] == 0 and (
+                task_id not in before_tasks
+                or task["value"] != before_tasks[task_id]["value"]
+            )
+        ]
+        for task_id in changed_task_ids:
+            reward = session.claim_task_reward(task_id)
+            if reward["ret"] == 0:
+                claimed += 1
+                log(f"征战诸天任务奖励已领取（任务 {task_id}）。")
+        if changed_task_ids and claimed == 0:
+            log("征战诸天相关任务进度已更新，当前没有达到领取条件的奖励。")
+        return {
+            "ret": 0, "completed": completed,
+            "remaining": server_remaining, "reason": "finished",
+            "claimed": claimed,
+        }
+
+
 def run_tower_tasks(
     server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
     stop_event: threading.Event | None = None,
     snapshot: Callable[[dict[str, Any]], None] | None = None,
     use_preferences: bool = True,
+    continue_on_loss: bool = True,
 ) -> dict[str, Any]:
     if not 0 <= count <= 100:
         raise ValueError("Invalid tower challenge count")
@@ -2855,13 +3527,30 @@ def run_tower_tasks(
             if stop_event is not None and stop_event.is_set():
                 return {"ret": 0, "completed": completed, "remaining": count - completed, "reason": "stopped"}
             result = session.tower_challenge()
-            if result["ret"] != 0 or not result["won"]:
-                return {
-                    "ret": result["ret"], "completed": completed,
-                    "remaining": count - completed,
-                    "reason": "tower_challenge_failed" if result["ret"] else "tower_challenge_lost",
-                }
+            if result["ret"] != 0:
+                completed += 1
+                log(f"镇妖塔第 {completed}/{count} 次挑战失败，服务端返回 {result['ret']}。")
+                if not continue_on_loss:
+                    return {"ret": result["ret"], "completed": completed, "remaining": count - completed, "reason": "tower_challenge_failed"}
+                continue
             completed += 1
+            if not result["won"]:
+                log(f"镇妖塔第 {completed}/{count} 次挑战未通过。")
+                if not continue_on_loss:
+                    return {
+                        "ret": 0, "completed": completed,
+                        "remaining": count - completed, "reason": "tower_challenge_lost",
+                    }
+                if completed < count:
+                    if stop_event is not None:
+                        if stop_event.wait(FREE_DRAW_INTERVAL_SECONDS):
+                            return {
+                                "ret": 0, "completed": completed,
+                                "remaining": count - completed, "reason": "stopped",
+                            }
+                    else:
+                        time.sleep(FREE_DRAW_INTERVAL_SECONDS)
+                continue
             state = result["state"] or state
             if state:
                 log(f"镇妖塔继续挑战 {completed}/{count} 完成，当前关卡 {state['curPassId']}。")
@@ -2886,6 +3575,7 @@ def run_adventure_tasks(
     server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
     stop_event: threading.Event | None = None,
     snapshot: Callable[[dict[str, Any]], None] | None = None,
+    continue_on_loss: bool = True,
 ) -> dict[str, Any]:
     if not 0 <= count <= 1000:
         raise ValueError("Invalid adventure challenge count")
@@ -2905,18 +3595,34 @@ def run_adventure_tasks(
                 }
             result = session.stage_challenge()
             if result["ret"] != 0:
-                return {
-                    "ret": result["ret"], "completed": completed,
-                    "remaining": 0 if count == 0 else count - completed,
-                    "reason": "adventure_challenge_failed",
-                }
+                completed += 1
+                progress_text = str(completed) if count == 0 else f"{completed}/{count}"
+                log(f"冒险第 {progress_text} 次挑战失败，服务端返回 {result['ret']}。")
+                if not continue_on_loss:
+                    return {"ret": result["ret"], "completed": completed, "remaining": 0 if count == 0 else count - completed, "reason": "adventure_challenge_failed"}
+                continue
             if not result["won"]:
-                log("冒险当前关卡未通过，已停止继续挑战。")
-                return {
-                    "ret": 0, "completed": completed,
-                    "remaining": 0 if count == 0 else count - completed,
-                    "reason": "adventure_challenge_lost",
-                }
+                completed += 1
+                if not continue_on_loss:
+                    log("冒险当前关卡未通过，已停止继续挑战。")
+                    return {
+                        "ret": 0, "completed": completed,
+                        "remaining": 0 if count == 0 else count - completed,
+                        "reason": "adventure_challenge_lost",
+                    }
+                progress_text = str(completed) if count == 0 else f"{completed}/{count}"
+                log(f"冒险第 {progress_text} 次挑战未通过，将继续挑战。")
+                if count == 0 or completed < count:
+                    if stop_event is not None:
+                        if stop_event.wait(FREE_DRAW_INTERVAL_SECONDS):
+                            return {
+                                "ret": 0, "completed": completed,
+                                "remaining": 0 if count == 0 else count - completed,
+                                "reason": "stopped",
+                            }
+                    else:
+                        time.sleep(FREE_DRAW_INTERVAL_SECONDS)
+                continue
             completed += 1
             state = session.stage_state()
             current_stage = state["passStageId"] + 1 if state is not None else current_stage
@@ -2990,7 +3696,7 @@ def run_magic_treasure_tasks(
         raise ValueError("Magic treasure task count must be 1")
     free_counts = free_counts or {}
     paid_counts = paid_counts or {}
-    if any(not 0 <= int(value) <= MAGIC_TREASURE_FREE_MAX for value in free_counts.values()):
+    if any(not 0 <= int(value) <= 2 for value in free_counts.values()):
         raise ValueError("Invalid magic treasure free count")
     if any(not 0 <= int(value) <= 100 for value in paid_counts.values()):
         raise ValueError("Invalid magic treasure paid count")
@@ -3000,41 +3706,53 @@ def run_magic_treasure_tasks(
     paid_completed = 0
     remaining = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        if stop_event is not None and stop_event.is_set():
+            return {"ret": 0, "completed": 0, "remaining": 0, "reason": "stopped"}
         states = session.magic_treasure_state()
         for pool_id, pool_name in MAGIC_TREASURE_POOLS.items():
+            state = states.get(pool_id)
+            if state is not None:
+                log(
+                    f"{pool_name}广告免费剩余 {max(0, 2 - int(state.get('adFreeTimes', 0)))}/2，"
+                    f"本次免费剩余 {max(0, 2 - int(state.get('freeDrawTimes', 0)))}/2。"
+                )
+        for pool_id, pool_name in MAGIC_TREASURE_POOLS.items():
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": free_completed, "remaining": remaining, "reason": "stopped"}
             selected_free = int(free_counts.get(pool_id, 0))
+            state = states.get(pool_id) or {}
+            ad_remaining = max(0, 2 - int(state.get("adFreeTimes", 0)))
+            normal_remaining = max(0, 2 - int(state.get("freeDrawTimes", 0)))
+            target = min(selected_free, ad_remaining + normal_remaining)
+            ad_target = min(target, ad_remaining)
+            normal_target = target - ad_target
+            for is_ad, draw_count, name in (
+                (True, ad_target, "广告免费"),
+                (False, normal_target, "本次免费"),
+            ):
+                for _ in range(draw_count):
+                    result = session.magic_treasure_draw(pool_id, 1, is_ad=is_ad)
+                    if result["ret"] != 0:
+                        return {
+                            "ret": result["ret"], "completed": free_completed,
+                            "remaining": target - (ad_target + normal_target),
+                            "reason": "magic_treasure_free_failed",
+                        }
+                    free_completed += 1
+                    log(f"{pool_name}{name}寻宝完成。")
+                    if stop_event is not None and stop_event.wait(FREE_DRAW_INTERVAL_SECONDS):
+                        return {"ret": 0, "completed": free_completed, "remaining": 0, "reason": "stopped"}
+                    if stop_event is None:
+                        time.sleep(FREE_DRAW_INTERVAL_SECONDS)
+        for pool_id, pool_name in MAGIC_TREASURE_POOLS.items():
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": free_completed + paid_completed, "remaining": remaining, "reason": "stopped"}
             selected_paid = int(paid_counts.get(pool_id, 0))
             state = states.get(pool_id)
-            available_free = (
-                selected_free if state is None
-                else max(0, MAGIC_TREASURE_FREE_MAX - int(state.get("freeDrawTimes", 0)))
-            )
-            free_target = min(selected_free, available_free)
             item_id = int(
                 state.get("itemId", MAGIC_TREASURE_COMPASS_ITEMS[pool_id])
                 if state is not None else MAGIC_TREASURE_COMPASS_ITEMS[pool_id]
             )
-            log(
-                f"{pool_name}免费可用 "
-                f"{available_free if state is not None else '--'}/2 次，本次选择 {selected_free} 次。"
-            )
-            for index in range(free_target):
-                if stop_event is not None and stop_event.is_set():
-                    return {
-                        "ret": 0, "completed": free_completed + paid_completed,
-                        "remaining": remaining, "reason": "stopped",
-                    }
-                result = session.magic_treasure_draw(pool_id, 1, item_id=item_id)
-                if result["ret"] != 0:
-                    return {
-                        "ret": result["ret"], "completed": free_completed + paid_completed,
-                        "remaining": remaining, "reason": "magic_treasure_free_failed",
-                    }
-                free_completed += 1
-                log(f"{pool_name}第 {index + 1}/{free_target} 次免费寻宝完成。")
-                if index + 1 < free_target:
-                    time.sleep(FREE_DRAW_INTERVAL_SECONDS)
-
             compass_available = session.item_count(item_id) if item_id > 0 else 0
             paid_target = min(selected_paid, compass_available)
             remaining += max(0, compass_available - paid_target)
@@ -3061,22 +3779,43 @@ def run_magic_treasure_tasks(
     }
 
 
-def run_treasure_auction_tasks(
+def _run_treasure_auction_cycle(
     server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
     stop_event: threading.Event | None = None,
     snapshot: Callable[[dict[str, Any]], None] | None = None,
     claim_rewards: bool = True, begin_explores: bool = True,
     help_friends: bool = True, identify_treasures: bool = True,
     disassemble_quality: int = -1,
+    session: GameSession | None = None,
 ) -> dict[str, Any]:
     if disassemble_quality not in (-1, 0, 1, 2):
         raise ValueError("Invalid treasure disassembly quality")
-    login = _load_login(server_id, output_dir)
     completed = 0
-    with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+    if session is None:
+        login = _load_login(server_id, output_dir)
+        session_context = GameSession(login["wsAddress"], int(login["playerId"]), login["token"])
+    else:
+        session_context = nullcontext(session)
+    with session_context as session:
         state = session.treasure_auction_enter()
         if state.get("ret") != 0:
             return {"ret": state.get("ret"), "completed": 0, "reason": "treasure_enter_failed"}
+        events = state.get("events", [])
+        for event in events:
+            if stop_event is not None and stop_event.is_set():
+                return {"ret": 0, "completed": completed, "remaining": 0, "reason": "stopped"}
+            result = session.treasure_auction_select_event(event["eventId"], 0)
+            if result["ret"] != 0:
+                return {
+                    "ret": result["ret"], "completed": completed,
+                    "remaining": len(events), "reason": "treasure_event_failed",
+                }
+            completed += 1
+            log(f"仙途寻宝已处理宗主禀报事件 {event['eventId']}，藏宝图奖励已领取。")
+        if events:
+            state = session.treasure_auction_enter()
+            if state.get("ret") != 0:
+                return {"ret": state.get("ret"), "completed": completed, "reason": "treasure_enter_failed"}
         places = state.get("places", [])
         if claim_rewards:
             now_ms = int(time.time() * 1000)
@@ -3163,6 +3902,52 @@ def run_treasure_auction_tasks(
                 value["treasureUnidentifiedCount"] = len(unidentified) - identify_count
             snapshot(value)
         return {"ret": 0, "completed": completed, "remaining": 0, "reason": "finished"}
+
+
+def run_treasure_auction_tasks(
+    server_id: int, output_dir: Path, count: int, log: Callable[[str], None],
+    stop_event: threading.Event | None = None,
+    snapshot: Callable[[dict[str, Any]], None] | None = None,
+    claim_rewards: bool = True, begin_explores: bool = True,
+    help_friends: bool = True, identify_treasures: bool = True,
+    disassemble_quality: int = -1,
+    poll_interval_seconds: float | None = None,
+) -> dict[str, Any]:
+    options = {
+        "claim_rewards": claim_rewards,
+        "begin_explores": begin_explores,
+        "help_friends": help_friends,
+        "identify_treasures": identify_treasures,
+        "disassemble_quality": disassemble_quality,
+    }
+    if poll_interval_seconds is None:
+        return _run_treasure_auction_cycle(
+            server_id, output_dir, count, log, stop_event, snapshot, **options,
+        )
+    if poll_interval_seconds < 10:
+        raise ValueError("Treasure auction polling interval must be at least 10 seconds")
+    completed = 0
+    log(f"仙途寻宝监控已启动，每 {int(poll_interval_seconds)} 秒检查一次。")
+    while stop_event is None or not stop_event.is_set():
+        try:
+            result = _run_treasure_auction_cycle(
+                server_id, output_dir, count, log, stop_event, snapshot, **options,
+            )
+            completed += int(result.get("completed", 0))
+            if result.get("reason") == "stopped":
+                break
+            if result.get("ret") not in (0, None):
+                log(
+                    f"仙途寻宝本轮未完成：{result.get('reason')}，"
+                    f"服务端返回 {result.get('ret')}，稍后重试。"
+                )
+        except (OSError, RuntimeError, TimeoutError, websocket.WebSocketException) as exc:
+            log(f"仙途寻宝本轮连接失败：{type(exc).__name__}: {exc}，稍后重试。")
+        if stop_event is None:
+            time.sleep(poll_interval_seconds)
+        elif stop_event.wait(poll_interval_seconds):
+            break
+    return {"ret": 0, "completed": completed, "remaining": 0, "reason": "stopped"}
 
 
 def run_homeland_tasks(
@@ -3384,7 +4169,16 @@ def run_yard_daily_tasks(
         stoves = yard_buildings_of_type(buildings, YARD_BUILD_STOVE)
         stove = stoves[0] if stoves else None
         stove_idle = bool(stove and stove.get("status") == 0)
-        if stove and yard_build_finished(stove):
+        stove_finished = bool(
+            stove and (
+                yard_build_finished(stove)
+                or (
+                    stove.get("totalNum", 0) > 0
+                    and stove.get("collectNum", 0) >= stove.get("totalNum", 0)
+                )
+            )
+        )
+        if stove and (stove.get("collectNum", 0) > 0 or stove_finished):
             result = session.yard_collect(stove)
             if result["ret"] != 0:
                 log(f"炼丹炉收丹失败，服务端返回 {result['ret']}。")
@@ -3392,8 +4186,8 @@ def run_yard_daily_tasks(
                 stove_idle = False
             else:
                 completed += 1
-                stove_idle = True
-                log("炼丹炉收丹完成。")
+                stove_idle = stove_idle or stove_finished
+                log(f"炼丹炉收丹完成，共收取 {stove.get('collectNum', 0)} 份。")
         elif stove and stove.get("status") == 1:
             log("炼丹炉仍在炼制中，本次不重复操作。")
         elif stove and stove.get("status") == 2:
@@ -3457,8 +4251,6 @@ def run_yard_draw_tasks(
     stop_event: threading.Event | None = None,
     snapshot: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    if not 1 <= count <= YARD_DRAW_MAX:
-        raise ValueError("Yard draw count must be between 1 and 100")
     login = _load_login(server_id, output_dir)
     completed = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
@@ -3470,45 +4262,39 @@ def run_yard_draw_tasks(
                 "remaining": count, "reason": "yard_enter_failed",
             }
         draw_data = entered["drawData"]
-        normal_free = 1 if draw_data.get("freeDrawTimes", 0) < 1 else 0
-        ad_free = max(0, YARD_AD_FREE_DAILY_MAX - draw_data.get("adCount", 0))
-        log(f"仙居造物计划执行 {count} 次，普通免费 {normal_free} 次，广告免费 {ad_free}/2 次。")
-
-        free_modes = ([False] * normal_free + [True] * ad_free)[:count]
-        for index, is_ad in enumerate(free_modes):
+        log(
+            f"仙居造物广告免费剩余 {max(0, 2 - draw_data.get('adCount', 0))}/2，"
+            f"本次免费剩余 {max(0, 2 - draw_data.get('freeDrawTimes', 0))}/2。"
+        )
+        if snapshot is not None:
+            value = session.resource_snapshot(server_id)
+            value["yardAdFreeRemaining"] = max(0, 2 - draw_data.get("adCount", 0))
+            value["yardNormalFreeRemaining"] = max(0, 2 - draw_data.get("freeDrawTimes", 0))
+            snapshot(value)
+        ad_remaining = max(0, 2 - draw_data.get("adCount", 0))
+        normal_remaining = max(0, 2 - draw_data.get("freeDrawTimes", 0))
+        for index in range(ad_remaining):
             if stop_event is not None and stop_event.is_set():
-                return {"ret": 0, "completed": completed, "remaining": count - completed, "reason": "stopped"}
-            result = session.yard_draw(False, is_ad=is_ad)
+                return {"ret": 0, "completed": completed, "remaining": 0, "reason": "stopped"}
+            result = session.yard_draw(False, is_ad=True)
             if result["ret"] == 30225:
-                continue
+                break
             if result["ret"] != 0:
-                return {"ret": result["ret"], "completed": completed, "remaining": count - completed, "reason": "yard_draw_failed"}
+                return {"ret": result["ret"], "completed": completed, "remaining": 0, "reason": "yard_draw_failed"}
             completed += 1
-            free_name = "广告免费" if is_ad else "普通免费"
-            log(f"仙居造物{free_name}完成，当前 {completed}/{count} 次。")
-            if completed < count and index + 1 < len(free_modes):
+            log(f"仙居造物广告免费完成 {index + 1}/{ad_remaining} 次。")
+            if index + 1 < ad_remaining:
                 time.sleep(FREE_DRAW_INTERVAL_SECONDS)
-
-        batches: list[bool] = []
-        remaining = count - completed
-        batches.extend([True] * (remaining // 10))
-        batches.extend([False] * (remaining % 10))
-        for ten in batches:
+        for index in range(normal_remaining):
             if stop_event is not None and stop_event.is_set():
-                return {
-                    "ret": 0, "completed": completed,
-                    "remaining": count - completed, "reason": "stopped",
-                }
-            result = session.yard_draw(ten, is_ad=False)
+                return {"ret": 0, "completed": completed, "remaining": 0, "reason": "stopped"}
+            result = session.yard_draw(False, is_ad=False)
+            if result["ret"] == 30225:
+                break
             if result["ret"] != 0:
-                log(f"仙居造物失败，服务端返回 {result['ret']}，不再继续消耗天工图纸。")
-                return {
-                    "ret": result["ret"], "completed": completed,
-                    "remaining": count - completed, "reason": "yard_draw_failed",
-                }
-            batch_count = 10 if ten else 1
-            completed += batch_count
-            log(f"仙居造物完成 {completed}/{count} 次。")
+                return {"ret": result["ret"], "completed": completed, "remaining": 0, "reason": "yard_draw_failed"}
+            completed += 1
+            log(f"仙居造物本次免费完成 {index + 1}/{normal_remaining} 次。")
         if snapshot is not None:
             snapshot(session.resource_snapshot(server_id))
         return {"ret": 0, "completed": completed, "remaining": 0, "reason": "finished"}
@@ -3528,6 +4314,8 @@ def run_chop_tasks(
     snapshot: Callable[[dict[str, Any]], None] | None = None,
     auto_rank_battle: bool = False,
     divine_mind_interval_minutes: float | None = None,
+    treasure_auction_options: dict[str, Any] | None = None,
+    treasure_auction_interval_seconds: float = 60,
 ) -> dict[str, Any]:
     """Run sequential chops, resolving only verified tree-drop equipment."""
     login = _load_login(server_id, output_dir)
@@ -3536,6 +4324,8 @@ def run_chop_tasks(
         return {"ret": 0, "completed": completed, "reason": "stopped"}
     if divine_mind_interval_minutes is not None and not 1 <= divine_mind_interval_minutes <= 1440:
         raise ValueError("Invalid divine mind collection interval")
+    if treasure_auction_options is not None and treasure_auction_interval_seconds < 10:
+        raise ValueError("Treasure auction polling interval must be at least 10 seconds")
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
         initial_snapshot = session.resource_snapshot(server_id)
         jade = int(initial_snapshot.get("jade", 0))
@@ -3544,6 +4334,8 @@ def run_chop_tasks(
         missing_ticket_logged = False
         divine_mind_total = 0
         next_divine_mind_at = 0.0
+        treasure_auction_total = 0
+        next_treasure_auction_at = 0.0
 
         def emit_snapshot() -> None:
             nonlocal jade, spirit_stone
@@ -3580,10 +4372,32 @@ def run_chop_tasks(
                 snapshot(value)
             return result
 
+        def process_treasure_auction_if_due(force: bool = False) -> None:
+            nonlocal treasure_auction_total, next_treasure_auction_at
+            if treasure_auction_options is None:
+                return
+            now = time.monotonic()
+            if not force and now < next_treasure_auction_at:
+                return
+            result = _run_treasure_auction_cycle(
+                server_id, output_dir, 1, log, stop_event, snapshot,
+                session=session, **treasure_auction_options,
+            )
+            treasure_auction_total += int(result.get("completed", 0))
+            next_treasure_auction_at = now + treasure_auction_interval_seconds
+            if result.get("ret") not in (0, None):
+                log(
+                    f"仙途寻宝本轮未完成：{result.get('reason')}，"
+                    f"服务端返回 {result.get('ret')}，稍后重试。"
+                )
+
         emit_snapshot()
         mind_result = collect_divine_mind_if_due(force=True)
         if mind_result is not None and mind_result["ret"] != 0:
             return {"ret": mind_result["ret"], "completed": completed, "reason": "divine_mind_collection_failed"}
+        if treasure_auction_options is not None:
+            log(f"仙途寻宝监控已启动，每 {int(treasure_auction_interval_seconds)} 秒检查一次。")
+            process_treasure_auction_if_due(force=True)
         pending = session.get_pending_equipment()
         while count is None or completed < count:
             if stop_event is not None and stop_event.is_set():
@@ -3591,6 +4405,7 @@ def run_chop_tasks(
             mind_result = collect_divine_mind_if_due()
             if mind_result is not None and mind_result["ret"] != 0:
                 return {"ret": mind_result["ret"], "completed": completed, "reason": "divine_mind_collection_failed"}
+            process_treasure_auction_if_due()
             equipment = pending
             if not equipment:
                 # Python owns the repeated-task loop. Each request must remain
@@ -3744,6 +4559,10 @@ def run_pupil_training(
     login = _load_login(server_id, output_dir)
     completed = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
+        reward = session.assistant_action(ASSISTANT_PUPIL_REWARD)
+        if reward["ret"] not in (0, None):
+            return {"ret": reward["ret"], "completed": 0, "reason": "pupil_reward_failed"}
+        log("宗门广告免费及本次免费福利已执行。")
         enter = session._request(PUPIL_ENTER, PUPIL_ENTER_RESPONSE)
         enter_ret = response_ret(enter)
         if enter_ret != 0:
