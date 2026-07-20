@@ -6,7 +6,7 @@ config.json
 !.env.example
 
 # Runtime output (may contain authentication/session data)
-
+login-output/
 
 # Python caches and local environments
 __pycache__/

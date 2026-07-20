@@ -27,14 +27,27 @@
       "new": false
     },
     {
-      "serverId": 4001684,
+      "serverId": 4001688,
       "labelName": "魑魅云",
-      "serverName": "魑魅云14服",
-      "address": "https://proxy-xddq-40.kvps85.com/s4001684_http",
+      "serverName": "魑魅云18服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4001688_http",
       "serverState": 1,
       "serverType": 0,
       "specialType": 0,
-      "openTime": 1784131200000,
+      "openTime": 1784476800000,
+      "preRegisterTime": 0,
+      "preRegisterFull": false,
+      "new": true
+    },
+    {
+      "serverId": 4001687,
+      "labelName": "魑魅云",
+      "serverName": "魑魅云17服",
+      "address": "https://proxy-xddq-40.kvps85.com/s4001687_http",
+      "serverState": 1,
+      "serverType": 0,
+      "specialType": 0,
+      "openTime": 1784390400000,
       "preRegisterTime": 0,
       "preRegisterFull": false,
       "new": true
@@ -54,8 +67,8 @@
     }
   ],
   "playerServerList": [
-    4000867,
     4000047,
+    4000867,
     4000589
   ],
   "reCallPlayer": false,
@@ -70,7 +83,7 @@
     "qq": ""
   },
   "works": "开发团队承诺积极履行《网络游戏行业防沉迷自律公约》#著作权人：上海萌野网络科技有限公司 游戏名：《寻道大千》 出版单位：海南省电子音像出版社有限公司#出版物号：ISBN 978-7-498-08243-5 审批文号：国新出审[2020]2276 号",
-  "recommendServerId": 4000867,
+  "recommendServerId": 4000047,
   "labelNameList": [],
   "labelNameMap": {},
   "configVersion": "0",
@@ -78,11 +91,11 @@
   "activitySmallSceneSwitch": "1|9|10",
   "festivalSceneSwitch": "4",
   "timeZone": 8,
-  "serverTime": 1784196497573,
+  "serverTime": 1784514039056,
   "backendConfigMap": {
     "USER_AGREEMENT_TOGGLE_LIST": "-1",
     "ACTIVITY_SMALL_SCENE_SWITCH": "1|9|10",
-    "CHANNEL_ACTIVITY_SHOW_SIGN_ITEM": "115060,0,0,1;710005,0,0,1;214194,0,0,1;214148,0,0,1",
+    "CHANNEL_ACTIVITY_SHOW_SIGN_ITEM": "115060,0,0,1;710005,0,0,1;214194,0,0,1;214148,0,0,1;100345,0,0,1;500046,0,0,1;160545,0,0,1",
     "VERSION_THEME": "0",
     "ACTIVITY_SCENE_SWITCH": "12",
     "FESTIVAL_SCENE_SWITCH": "4",
