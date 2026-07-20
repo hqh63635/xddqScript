@@ -187,7 +187,7 @@ def read_config() -> dict[str, str]:
         "autoHeroRank": "false", "heroRankCount": "10",
         "autoDestinyTravel": "false", "destinyTravelCount": "10",
         "autoProfessionQuick": "false", "autoProfessionChallenge": "false",
-        "scheduleEnabled": "false", "scheduleTime": "00:00:01",
+        "scheduleEnabled": "false", "scheduleTime": "00:00:01", "scheduleIntervalHours": "24",
         "professionChallengeCount": "30",
         "autoYardDaily": "false", "autoYardDraw": "false", "yardDrawCount": "1",
         "autoHomeland": "false", "homelandPreferredItem": "100004", "homelandPreferredLevel": "3",
@@ -493,15 +493,24 @@ class XundaoWindow(FramelessWindow):
         self.schedule_time.setTime(parsed_time if parsed_time.isValid() else QTime(0, 0, 1))
         self.schedule_time.timeChanged.connect(self._schedule_settings_changed)
         self.schedule_time.setFixedWidth(210)
+        self.schedule_interval = SpinBox(); self.schedule_interval.setRange(1, 168)
+        try:
+            saved_interval_hours = int(config.get("scheduleIntervalHours", "24"))
+        except (TypeError, ValueError):
+            saved_interval_hours = 24
+        self.schedule_interval.setValue(max(1, min(168, saved_interval_hours))); self.schedule_interval.setSuffix(" 小时")
+        self.schedule_interval.valueChanged.connect(self._schedule_settings_changed)
         self.schedule_status_label = QLabel(); self.schedule_status_label.setObjectName("statusGood")
         self.next_schedule_label = QLabel(); self.next_schedule_label.setObjectName("muted")
         form.addWidget(self.schedule_enabled, 0, 0, 1, 2)
         form.addWidget(QLabel("执行时间"), 1, 0)
         form.addWidget(self.schedule_time, 1, 1)
-        form.addWidget(QLabel("调度状态"), 2, 0)
-        form.addWidget(self.schedule_status_label, 2, 1)
-        form.addWidget(QLabel("下次执行"), 3, 0)
-        form.addWidget(self.next_schedule_label, 3, 1)
+        form.addWidget(QLabel("或每隔"), 2, 0)
+        form.addWidget(self.schedule_interval, 2, 1)
+        form.addWidget(QLabel("调度状态"), 3, 0)
+        form.addWidget(self.schedule_status_label, 3, 1)
+        form.addWidget(QLabel("下次执行"), 4, 0)
+        form.addWidget(self.next_schedule_label, 4, 1)
         form.setColumnStretch(2, 1)
         panel_layout.addWidget(settings)
         panel_layout.addStretch(1)
@@ -1269,7 +1278,7 @@ class XundaoWindow(FramelessWindow):
         self.start_button.setToolTip("启动当前已选择的任务")
         self.stop_button.setToolTip("停止当前正在运行的任务")
         self.relogin_button = PushButton(FIF.SYNC, "重新登录")
-        self.relogin_button.clicked.connect(self.start_login)
+        self.relogin_button.clicked.connect(self.retry_saved_session)
         self.relogin_button.hide()
         self.connection_status = QLabel("●  等待连接"); self.connection_status.setObjectName("statusGood")
         self.runtime_label = QLabel("运行时长：00:00:00"); self.runtime_label.setObjectName("muted")
@@ -1290,6 +1299,13 @@ class XundaoWindow(FramelessWindow):
 
     def _reset_next_scheduled_run(self) -> None:
         now = datetime.now()
+        try:
+            hours = max(1, int(self.schedule_interval.value())) if hasattr(self, "schedule_interval") else int(read_config().get("scheduleIntervalHours", "24"))
+        except (TypeError, ValueError):
+            hours = 24
+        if hours != 24:
+            self._next_scheduled_run = now + timedelta(hours=hours)
+            return
         scheduled = self._configured_schedule_time()
         candidate = now.replace(
             hour=scheduled.hour(), minute=scheduled.minute(), second=scheduled.second(), microsecond=0,
@@ -1314,7 +1330,8 @@ class XundaoWindow(FramelessWindow):
         enabled = self.schedule_enabled.isChecked()
         self._schedule_enabled = enabled
         schedule_time = self.schedule_time.getTime().toString("HH:mm:ss")
-        update_config(scheduleEnabled=enabled, scheduleTime=schedule_time)
+        update_config(scheduleEnabled=enabled, scheduleTime=schedule_time,
+                      scheduleIntervalHours=self.schedule_interval.value())
         self._reset_next_scheduled_run()
         self._update_schedule_summary()
         self.append_log(
@@ -1336,7 +1353,11 @@ class XundaoWindow(FramelessWindow):
         if self._next_scheduled_run is None or now < self._next_scheduled_run:
             return
         scheduled_for = self._next_scheduled_run
-        self._next_scheduled_run += timedelta(days=1)
+        try:
+            hours = max(1, int(self.schedule_interval.value()))
+        except (TypeError, ValueError):
+            hours = 24
+        self._next_scheduled_run += timedelta(hours=hours) if hours != 24 else timedelta(days=1)
         self._update_schedule_summary()
         self._run_scheduled_tasks(scheduled_for)
 
@@ -1467,6 +1488,16 @@ class XundaoWindow(FramelessWindow):
     def open_settings(self) -> None:
         if SettingsDialog(self).exec() == QDialog.DialogCode.Accepted:
             self.start_login()
+
+    def retry_saved_session(self) -> None:
+        """Validate the saved token before falling back to QR login."""
+        if self.worker is not None and self.worker.is_alive():
+            return
+        self.relogin_button.setEnabled(False)
+        self.connection_status.setText("●  正在验证登录状态")
+        self.app_title_bar.set_connected(False, "●  正在验证登录状态")
+        self.append_log("正在验证已保存 token，有效时将直接恢复连接。")
+        self.restore_session()
 
     def restore_session(self) -> None:
         try: config = read_config()

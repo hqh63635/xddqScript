@@ -31,6 +31,8 @@ PUPIL_ENTER = 211801
 PUPIL_ENTER_RESPONSE = 11801
 PUPIL_TRAIN = 211802
 PUPIL_TRAIN_RESPONSE = 11802
+PUPIL_GET_AD_REWARD = 211814
+PUPIL_GET_AD_REWARD_RESPONSE = 11814
 RANK_BATTLE_GET_LIST = 20410
 RANK_BATTLE_GET_LIST_RESPONSE = 410
 RANK_BATTLE_CHALLENGE = 20412
@@ -2871,13 +2873,12 @@ def run_magic_draw_tasks(
                 f"神通广告免费剩余 {max(0, MAGIC_FREE_DAILY_MAX - state['freeAdTimes'])}/2，"
                 f"本次免费剩余 {max(0, MAGIC_NORMAL_FREE_MAX - state['freeDrawTimes'])}/2。"
             )
-        for index, (action_type, name) in enumerate((
-            (ASSISTANT_MAGIC_VIDEO, "广告免费"),
-            (ASSISTANT_MAGIC_FREE, "本次免费"),
-        )):
+        # 神通使用专用 24408 协议；通用助手 230202 不会返回 30202。
+        magic_free_actions = ((True, "广告免费"),)
+        for index, (is_ad, name) in enumerate(magic_free_actions):
             if stop_event is not None and stop_event.is_set():
                 return {"ret": 0, "completed": free_completed, "remaining": 0, "reason": "stopped"}
-            result = session.assistant_action(action_type)
+            result = session.magic_draw(1, is_ad=is_ad)
             if result["ret"] not in (0, None):
                 return {"ret": result["ret"], "completed": free_completed, "remaining": 0, "reason": "magic_draw_failed"}
             free_completed += 1
@@ -2971,11 +2972,15 @@ def run_law_looks_draw_tasks(
                 f"法象广告免费剩余 {max(0, 2 - state['freeAdTimes'])}/2，"
                 f"本次免费剩余 {max(0, LAW_LOOKS_FREE_DAILY_MAX - state['freeDrawTimes'])}/2。"
             )
-        result = session.assistant_action(ASSISTANT_LAW_LOOKS_REWARD)
-        if result["ret"] not in (0, None):
-            return {"ret": result["ret"], "completed": 0, "remaining": 0, "reason": "law_looks_free_draw_failed"}
-        free_completed = 1
-        log("法象广告免费及本次免费福利已执行。")
+        # 法象召唤专用协议：draw_type=1 为广告，0 为本次免费，2 为引灵灯。
+        for draw_type, label in ((1, "广告免费"),):
+            result = session.law_looks_draw(1, draw_type=draw_type)
+            if result["ret"] not in (0, None):
+                return {"ret": result["ret"], "completed": free_completed, "remaining": 0, "reason": "law_looks_free_draw_failed"}
+            free_completed += 1
+            log(f"法象{label}已执行。")
+            if draw_type == 1:
+                time.sleep(FREE_DRAW_INTERVAL_SECONDS)
 
         ticket_available = session.item_count(LAW_LOOKS_TICKET_ITEM)
         paid_target = min(paid_count, ticket_available)
@@ -4559,7 +4564,11 @@ def run_pupil_training(
     login = _load_login(server_id, output_dir)
     completed = 0
     with GameSession(login["wsAddress"], int(login["playerId"]), login["token"]) as session:
-        reward = session.assistant_action(ASSISTANT_PUPIL_REWARD)
+        # 宗门广告奖励使用专用协议，通用助手接口不会返回正确响应。
+        reward_payload = protobuf_int(1, 0)
+        reward = {"ret": response_ret(session._request(
+            PUPIL_GET_AD_REWARD, PUPIL_GET_AD_REWARD_RESPONSE, reward_payload,
+        ))}
         if reward["ret"] not in (0, None):
             return {"ret": reward["ret"], "completed": 0, "reason": "pupil_reward_failed"}
         log("宗门广告免费及本次免费福利已执行。")
